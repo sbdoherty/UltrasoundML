@@ -1,6 +1,8 @@
 # coding=utf-8
 # This is a sample Python script.
 import tensorflow as tf
+print(tf.__version__)
+
 # Press Shift+F10 to execute it or replace it with your code.
 # Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
 
@@ -24,14 +26,12 @@ def basic_tf_variables():
     print(tensorone)
     tensortwo = tf.reshape(tensorone, [2,3,1]) #2 lists, 3 lists inside each list, 1 element each interior list
     tensorthree = tf.reshape(tensortwo,[3, -1]) #-1 calculate size of dimension for us [3,2]]! useful for us!
-# Press the green button in the gutter to run the script.
 
     print(tensortwo)
     print(tensorthree)
 
+    tensorone.numpy()
 
-    with tf.Session() as sess:
-        tensorone.eval()
 
 
 if __name__ == '__main__':
