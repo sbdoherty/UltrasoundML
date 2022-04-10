@@ -39,3 +39,29 @@ history = model.fit(train_images, train_labels, epochs=10,
                     validation_data=(test_images, test_labels))
 
 test_loss, test_acc = model.evaluate(test_images, test_labels, verbose=2)
+
+#ideas for training CNN with small data sets usually need millions
+
+#Data augmentation
+from keras.preprocessing import image
+from keras.preprocessing.image import ImageDataGenerator
+
+#create data generator object
+datagen = ImageDataGenerator(
+    rotation_range=40, width_shift_range=0.2, height_shift_range=0.2, shear_range=0.2, zoom_range=0.2,
+    horizontal_flip=True, fill_mode='nearest'
+)
+
+i = 0
+test_img = train_images[14]
+img = image.img_to_array(test_img)
+img = image.reshape((1,),+ img.shape)
+
+for batch in datagen.flow(img, save_prefix='test', save_format='jpeg')
+    plt.figure(i)
+    plot = plt.imshow(image.img_to_array(batch[0]))
+    i += 1
+    if i > 4:
+        break
+
+plt.show()
