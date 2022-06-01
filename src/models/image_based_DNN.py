@@ -13,10 +13,11 @@ from sklearn.model_selection import train_test_split
 def plot_loss(head_tail, history):
     """Visualize error decrease over training process """
     plt.figure(2)
-    plt.plot(history.history['loss'], label='loss')
-    plt.plot(history.history['val_loss'], label='val_loss')
+    plt.plot(history.history['mape'], label='loss')
+    plt.plot(history.history['val_mape'], label='val_loss')
     plt.xlabel('Epoch')
     plt.ylabel('Error')
+    plt.yscale('log')
     plt.legend()
     plt.grid(True)
     if not os.path.exists(os.path.join(head_tail[0], "..", "Pictures")):
@@ -28,9 +29,9 @@ def build_and_compile_model(norm):
     """Defines the input function to build a deep neural network for tensor flow"""
     model = keras.Sequential([
       norm,
-      layers.Dense(512, activation='relu', kernel_regularizer=regularizers.l2(0.0001)),
+      layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(0.0005)),
       layers.Dropout(0.5),
-      layers.Dense(512, activation='relu', kernel_regularizer=regularizers.l2(0.0001)),
+      layers.Dense(128, activation='relu', kernel_regularizer=regularizers.l2(0.0005)),
       layers.Dropout(0.5),
       layers.Dense(1)
     ])
@@ -70,8 +71,6 @@ def tf_demographics(csv, categorical_features, numerical_features=""):
     feature_columns = []
     dataset.apply(lambda x: pd.to_numeric(x, errors='coerce').notnull().all())
     print(dataset.shape)
-    dataset.to_csv(r"F:\WorkData\MULTIS\master_csv\001_MasterList_weka.csv", sep='\t')
-
     for feature_name in features:
         if dataset.loc[:, feature_name].dtype == "object":
             print(f"classifying {feature_name}:")
@@ -115,12 +114,12 @@ def tf_demographics(csv, categorical_features, numerical_features=""):
     history = model.fit(
         train_data,
         train_labels,
-        validation_split=0.0,
-        verbose=2, epochs=750,
+        validation_split=0.2,
+        verbose=2, epochs=1000,
         shuffle=True, batch_size=batch_size,
     )
 
-    #plot_loss(head_tail, history)
+    plot_loss(head_tail, history)
     score = model.evaluate(test_data, test_labels, verbose=2)
     print(f"model loss is: {score[0]}")
     print(f"model mean absolute error is: {score[1]}")
@@ -137,17 +136,17 @@ def tf_demographics(csv, categorical_features, numerical_features=""):
     plt.xlim(lims)
     plt.ylim(lims)
     plt.plot(lims, lims)
-    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", "stiffness_DNN_demographics.png"), format='png')
+    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", "stiffness_DNN_image_based.png"), format='png')
 
     plt.figure(4)
     error = test_predictions - test_labels
     plt.hist(error, bins=25)
     plt.xlabel('Prediction Error [Stiffness]')
     plt.ylabel('Count')
-    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", "demographics_error.png"), format='png')
+    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", "image_based_error.png"), format='png')
 
 if __name__ == "__main__":
     csv_path = r"F:\WorkData\MULTIS\master_csv\001_MasterList_indentation.csv"
-    numeric_features = ["Total_Stiff", "Age", "BMI"]
+    numeric_features = ["Total_Stiff", "Age", "BMI", "Thickness", "Skin", "Fat", "Muscle"]
     categorical_features = ["SubID", "Location", "Gender", "ActivityLevel", "Race", "Ethnicity"]
     tf_demographics(csv_path, categorical_features=categorical_features, numerical_features=numeric_features)
