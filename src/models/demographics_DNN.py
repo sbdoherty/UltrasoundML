@@ -200,7 +200,7 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=Fal
     # Plot different shapley figures for feature importance
     if shapley:
         print(test_data.iloc[0])
-        background = train_data.head(100)  # data is already shuffled, no need to randomly choose?
+        background = train_data.head(5)  # data is already shuffled, no need to randomly choose?
 
         # hide the sklearn future deprecation warning as it clogs the terminal
         with warnings.catch_warnings():
@@ -216,13 +216,9 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=Fal
         print(np.shape(shap_values))
         print(test_data.shape)
         fig = shap.plots._waterfall.waterfall_legacy(explainer.expected_value[0], shap_values[0][0], test_data.iloc[0],
-                                               max_display=20, show=False) #, feature_names=test_data.columns.values)
-
+                                               max_display=20, show=False)
         date = datetime.now().strftime("%Y_%m_%d-%I%p")
         print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_waterfall_{date}.png")}')
-
-        # Check for valid dir
-        os.makedirs(os.path.join(head_tail[0], "..", "Pictures"), exist_ok=True)
         plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_waterfall_{date}.png"), format='png')
         plt.close()
 
@@ -232,32 +228,21 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=Fal
         fig2 = shap.force_plot(explainer.expected_value[0], shap_values[0][0], test_data.iloc[0],
                                matplotlib=True, show=False)
         print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_force_{date}.png")}')
-
-        # Check for valid dir
-        os.makedirs(os.path.join(head_tail[0], "..", "Pictures"), exist_ok=True)
         plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_force_{date}.png"), format='png')
         plt.close()
 
-        # Generate a force plot for the same entry
+        # Generate a summary plot for all entries
         fig3 = plt.figure()
-        # fig3 = shap.summary_plot(shap_values, train_data)
-        import copy
-        fig4 = shap.summary_plot(shap_values[0], features=test_data.columns)
-        print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_beeswarm_{date}.png")}')
-
-        # Check for valid dir
-        os.makedirs(os.path.join(head_tail[0], "..", "Pictures"), exist_ok=True)
-        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_beeswarm_{date}.png"), format='png')
+        fig3 = shap.summary_plot(shap_values, train_data, show=False)
+        print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_summary_{date}.png")}')
+        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_summary_{date}.png"), format='png')
         plt.close()
 
         # Generate a force plot for the same entry
         fig4 = plt.figure()
-        fig4 = shap.summary_plot(shap_values, train_data)
-        print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_summary_{date}.png")}')
-
-        # Check for valid dir
-        os.makedirs(os.path.join(head_tail[0], "..", "Pictures"), exist_ok=True)
-        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_summary_{date}.png"), format='png')
+        fig4 = shap.summary_plot(shap_values[0], features=test_data.columns, show=False)
+        print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_beeswarm_{date}.png")}')
+        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_beeswarm_{date}.png"), format='png')
         plt.close()
 
     # Generate a gradio web interface if the user requested it
@@ -312,8 +297,8 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=Fal
 if __name__ == "__main__":
     csv_path = r"F:\WorkData\MULTIS\master_csv\001_MasterList_indentation.csv"
     #  lists are sorted alphabetically so order does not matter
-    categorical_features = ["Location", "Gender", "ActivityLevel", "Race", "Ethnicity"]  # Features that aren't numerical
+    categorical_features = ["Location", "Gender", "ActivityLevel", "Race", "Ethnicity"] # Features that aren't numerical
     numeric_features = ["Total_Stiff", "Age", "BMI"]  # Features defined by a range of numbers
-    make_interface = False
+    make_interface = True
     plot_shapley = True  # takes a while to run, but generates feature importance plots
     tf_demographics(csv_path, categorical_features, numeric_features, interface=make_interface, shapley=plot_shapley)
