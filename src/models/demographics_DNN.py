@@ -22,6 +22,7 @@ def ohe_df(enc, df, columns):
     new_colnames = np.concatenate(enc.named_transformers_['OHE'].categories_).tolist()   # unique category classes
     all_colnames = new_colnames + initial_colnames_keep
     df = pd.DataFrame(transformed_array, index=df.index, columns=all_colnames)
+
     return df
 
 
@@ -46,16 +47,17 @@ def plot_test_predictions(head_tail, model, test_df, test_labels):
     """Function to visualize the quality of predictions on the test data"""
     test_predictions = model.predict(test_df).flatten()
     plt.figure()
-    plt.scatter(test_labels, test_predictions)
-    plt.xlabel('True Compliance (mm/MPa)')
-    plt.ylabel('Predicted Compliance (mm/MPa)')
-    lims = [0, 3000]
+    plt.scatter(test_predictions, test_labels)
+
+    plt.xlabel('Predicted Compliance (mm/MPa)')
+    plt.ylabel('Experimental Compliance (mm/MPa)')
+    lims = [0, 3500]
     plt.xlim(lims)
     plt.ylim(lims)
     plt.plot(lims, lims, linestyle='dashed', color='black', linewidth=2)
     date = datetime.now().strftime("%Y_%m_%d-%I%p")
 
-    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"stiffness_DNN_demographics_{date}.png"), format='png')
+    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"compliance_DNN_demographics_{date}.png"), format='png')
 
     # Second plot of histogram mape
     plt.figure()
@@ -70,7 +72,7 @@ def build_and_compile_model(norm):
     """Defines the input function to build a deep neural network for tensor flow"""
     model = tf.keras.Sequential([
       norm,
-      layers.GaussianNoise(0.1),
+      #layers.GaussianNoise(0.1),
       layers.Dense(64, kernel_regularizer=regularizers.l2(0.001)),
       layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)),
       layers.Dropout(0.3),
@@ -96,6 +98,15 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=Fal
 
     # Filter the csv by the desired features
     dataset = dataset[features]
+    dataset = dataset.rename(columns={'Total_Stiff': 'Compliance'})
+    dataset['Compliance'] = 1/dataset['Compliance']
+    a = dataset['Compliance']
+
+    i = numerical_features.index("Total_Stiff")
+    numerical_features[i] = "Compliance"
+    i = features.index("Total_Stiff")
+    features[i] = "Compliance"
+
     dataset.apply(lambda x: pd.to_numeric(x, errors='coerce').notnull().all())
     dataset = dataset.dropna()
     print(dataset.head())  # Show first five entries and some columns
@@ -144,9 +155,9 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=Fal
     print(f"test data shape is {test_data.shape}")
     print(train_data.describe().transpose()[['mean', 'std']])
 
-    # Pop off the Total stiffness metric, which is the inverse our output
-    train_labels = 1/train_data.pop("Total_Stiff")
-    test_labels = 1/test_data.pop("Total_Stiff")
+    # Pop off the compliance metric, which is the inverse our output
+    train_labels = train_data.pop("Compliance")
+    test_labels = test_data.pop("Compliance")
 
 
     #  Normalize the inputs
@@ -200,7 +211,7 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=Fal
     # Plot different shapley figures for feature importance
     if shapley:
         print(test_data.iloc[0])
-        background = train_data.head(5)  # data is already shuffled, no need to randomly choose?
+        background = train_data.head(100)  # data is already shuffled, no need to randomly choose?
 
         # hide the sklearn future deprecation warning as it clogs the terminal
         with warnings.catch_warnings():
@@ -251,23 +262,23 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=Fal
 
         def make_prediction(*features):
             """Function to make a prediction on a new user value from a gradio user interface"""
-            Total_Stiff = 999  # Dummy val just for the one hot encoder. Probably a more graceful solution available?
+            Compliance = 1000  # Dummy val just for the one hot encoder. Probably a more graceful solution available?
             features = list(features)
-            features.append(Total_Stiff)
+            features.append(Compliance)
             cols = categorical_features + numerical_features
             pred_df = pd.DataFrame(data=[features], columns=cols)
 
             # Convert user input to one hot encoded values so predictions can be made
             ohe_pred = ohe_df(enc, pred_df, categorical_features)
-            ohe_pred.drop(["Total_Stiff"], axis=1, inplace=True)
+            ohe_pred.drop(["Compliance"], axis=1, inplace=True)
 
             # Sanity check that variables look correct
             with pd.option_context('display.max_rows', None, 'display.max_columns', None):
                 print(ohe_pred)
             pred = model.predict([ohe_pred])
 
-            print(f"Predicted tissue stiffness of {pred[0][0]} MPa/mm")
-            return f"Predicted tissue stiffness of {pred[0][0]} MPa/mm"
+            print(f"Predicted tissue compliance of {pred[0][0]} mm/MPa")
+            return f"Predicted tissue compliance of {pred[0][0]} mm/MPa"
 
         input_list = []
         #  Create dropdown menus for categorical inputs
@@ -281,7 +292,7 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=Fal
 
         #  Create number menus for numerical inputs
         for variable in numerical_features:
-            if variable != "Total_Stiff":
+            if variable != "Compliance":
                 min_val = min(train_data[variable])
                 max_val = max(train_data[variable])
                 print(f"Choose a value for {variable}, with acceptable range from {min_val} to {max_val}")
@@ -291,14 +302,14 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=Fal
 
         #  Launch gradio interface on the web
         app = gr.Interface(fn=make_prediction, inputs=input_list, outputs="text")
-        app.launch(share=False) # share=True to display on the gradio webpage. Can share on huggingfaces
+        app.launch(share=True) # share=True to display on the gradio webpage. Can share on huggingfaces
 
 
 if __name__ == "__main__":
-    csv_path = r"F:\WorkData\MULTIS\master_csv\001_MasterList_indentation.csv"
+    csv_path = r"F:\WorkData\MULTIS\master_csv\001_MasterList_indentation_orig.csv"
     #  lists are sorted alphabetically so order does not matter
-    categorical_features = ["Location", "Gender", "ActivityLevel", "Race", "Ethnicity"] # Features that aren't numerical
+    categoric_features = ["Location", "Gender", "ActivityLevel", "Race", "Ethnicity"] # Features that aren't numerical
     numeric_features = ["Total_Stiff", "Age", "BMI"]  # Features defined by a range of numbers
     make_interface = True
     plot_shapley = True  # takes a while to run, but generates feature importance plots
-    tf_demographics(csv_path, categorical_features, numeric_features, interface=make_interface, shapley=plot_shapley)
+    tf_demographics(csv_path, categoric_features, numeric_features, interface=make_interface, shapley=plot_shapley)
