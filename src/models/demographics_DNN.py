@@ -18,8 +18,7 @@ import warnings
 def ohe_df(enc, df, columns):
     """function to convert a df to a one hot encoded df with appropriate column labels"""
     transformed_array = enc.transform(df)
-    initial_colnames_keep = list(set(df.columns.tolist()) - set(columns))  # essentially the numeric labels
-    initial_colnames_keep.sort()
+    initial_colnames_keep = list(df.select_dtypes(include=np.number).columns)  # essentially the numeric labels
     new_colnames = np.concatenate(enc.named_transformers_['OHE'].categories_).tolist()   # unique category classes
     all_colnames = new_colnames + initial_colnames_keep
     df = pd.DataFrame(transformed_array, index=df.index, columns=all_colnames)
