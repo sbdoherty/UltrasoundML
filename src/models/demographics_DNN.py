@@ -15,7 +15,7 @@ import shap
 import warnings
 
 
-def ohe_df(enc, df, columns):
+def ohe_df(enc: ColumnTransformer, df: pd.DataFrame):  #, columns):
     """function to convert a df to a one hot encoded df with appropriate column labels"""
     transformed_array = enc.transform(df)
     initial_colnames_keep = list(df.select_dtypes(include=np.number).columns)  # essentially the numeric labels
@@ -26,7 +26,7 @@ def ohe_df(enc, df, columns):
     return df
 
 
-def plot_loss(head_tail, history):
+def plot_loss(head_tail: list, history: tf.keras.callbacks.History):
     """Visualize error decrease over training process """
     plt.figure(2)
     plt.plot(history.history['loss'], label='loss')
@@ -42,7 +42,7 @@ def plot_loss(head_tail, history):
     plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"demographics_loss_history_{date}.png"))
 
 
-def plot_test_predictions(head_tail, model, test_df, test_labels):
+def plot_test_predictions(head_tail: list, model: tf.keras.Model, test_df: pd.DataFrame, test_labels: pd.DataFrame):
     """Function to visualize the quality of predictions on the test data"""
     test_predictions = model.predict(test_df).flatten()
     plt.figure()
@@ -67,14 +67,14 @@ def plot_test_predictions(head_tail, model, test_df, test_labels):
     plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"demographics_error_{date}.png"), format='png')
 
 
-def build_and_compile_model(hp, norm):
+def build_and_compile_model(hp: keras_tuner.HyperParameters(), norm: tf.keras.layers.Normalization()):
     """Defines the input function to build a deep neural network for tensorflow"""
 
     # Define hyperparameters
     units = hp.Int("units", min_value=32, max_value=512, step=64)
     dropout = hp.Float("dropout", min_value=0.1, max_value=0.6, step=0.1)
     lr = hp.Choice("lr", values=[1e-2, 1e-3, 1e-4])
-    l2 = hp.Float("l2", min_value=1e-5, max_value=1e-3, sampling="log")
+    #l2 = hp.Float("l2", min_value=1e-5, max_value=1e-3, sampling="log")
     gaussian_noise = hp.Boolean("gaussian_noise")
 
     # Define model architecture
@@ -82,10 +82,10 @@ def build_and_compile_model(hp, norm):
     model.add(norm)
     if gaussian_noise:
         model.add(layers.GaussianNoise(0.1))
-    model.add(layers.Dense(units=units, kernel_regularizer=regularizers.l2(l2)))
+    model.add(layers.Dense(units=units))#, kernel_regularizer=regularizers.l2(l2)))
     model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
     model.add(layers.Dropout(rate=dropout))
-    model.add(layers.Dense(units=units, kernel_regularizer=regularizers.l2(l2)))
+    model.add(layers.Dense(units=units))#, kernel_regularizer=regularizers.l2(l2)))
     model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
     model.add(layers.Dropout(rate=dropout))
     model.add(layers.Dense(1))
@@ -96,8 +96,13 @@ def build_and_compile_model(hp, norm):
     return model
 
 
-def tf_demographics(csv, categorical_features, numerical_features, interface=[False, False], shapley=False):
-    """Build deep neural network from a csv file, and perform plotting functions and shapley/gradio outputs"""
+def tf_demographics(csv: str, categorical_features: list, numerical_features: list, interface=[False, False], shapley=False):
+    """Build deep neural network from a csv file, and perform plotting functions and shapley/gradio outputs
+       csv: path to the data file
+       categorical features: non numeric feature names that will be pulled from the csv into the dataframe
+       numerical features: numeric feature names that will be pulled from the csv into dataframe
+       interface: first bool: do you want gradio at all? second bool: do you want to push gradio app to web?
+       shapley: do you want to try out feature importance plots? """
 
     # Read in the master_csv file
     dataset = pd.read_csv(csv)
@@ -150,12 +155,13 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=[Fa
     enc = ColumnTransformer([("OHE", OneHotEncoder(sparse=False, handle_unknown="ignore"), categorical_features)],
                             remainder="passthrough")
     enc.fit(dataset)  # fit the encoder to the datasets variables
+    print(type(enc))
 
     # call function to onehot encode the data
-    ohe_dataset = ohe_df(enc, dataset, categorical_features)
+    ohe_dataset = ohe_df(enc, dataset) #, categorical_features)
 
     # Split training and testing data
-    train_data, test_data = train_test_split(ohe_dataset, train_size=0.8, random_state=len(dataset))
+    train_data, test_data = train_test_split(ohe_dataset, train_size=0.8, random_state=752)
     print(f"train data shape is {train_data.shape}")
     print(f"test data shape is {test_data.shape}")
     print(train_data.describe().transpose()[['mean', 'std']])
@@ -172,11 +178,11 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=[Fa
     # create a log directory for a tensorboard visualization
     os.makedirs(os.path.join(head_tail[0], "..", "logs", "fit"), exist_ok=True)
     log_path = os.path.join(head_tail[0], "..", "logs", "fit")
-    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=25)
-    model_checkpoint = tf.keras.callbacks.ModelCheckpoint(log_path, monitor='val_loss', verbose=1,
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=20)
+    model_checkpoint = tf.keras.callbacks.ModelCheckpoint(log_path, monitor='val_loss', verbose=2,
                                                           save_weights_only=True, save_best_only=True, mode='min')
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_path, histogram_freq=1)
-    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=100)
+    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=2, patience=50)
 
     # define hyperparameters through keras tuner
     hp = keras_tuner.HyperParameters()
