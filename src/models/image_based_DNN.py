@@ -154,7 +154,7 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=[Fa
     ohe_dataset = ohe_df(enc, dataset, categorical_features)
 
     # Split training and testing data
-    train_data, test_data = train_test_split(ohe_dataset, train_size=0.8, random_state=len(dataset))
+    train_data, test_data = train_test_split(ohe_dataset, train_size=0.8, random_state=752)
     print(f"train data shape is {train_data.shape}")
     print(f"test data shape is {test_data.shape}")
     print(train_data.describe().transpose()[['mean', 'std']])
@@ -171,11 +171,11 @@ def tf_demographics(csv, categorical_features, numerical_features, interface=[Fa
     # create a log directory for a tensorboard visualization
     os.makedirs(os.path.join(head_tail[0], "..", "logs", "fit"), exist_ok=True)
     log_path = os.path.join(head_tail[0], "..", "logs", "fit")
-    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=25)
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=20)
     model_checkpoint = tf.keras.callbacks.ModelCheckpoint(log_path, monitor='val_loss', verbose=1,
                                                           save_weights_only=True, save_best_only=True, mode='min')
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_path, histogram_freq=1)
-    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=100)
+    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=50)
 
     # define hyperparameters through keras tuner
     hp = keras_tuner.HyperParameters()
@@ -322,7 +322,7 @@ if __name__ == "__main__":
     csv_path = r"F:\WorkData\MULTIS\master_csv\001_MasterList_indentation_orig.csv"
     #  lists are sorted alphabetically so order does not matter
     categoric_features = ["Location", "Gender", "ActivityLevel", "Race", "Ethnicity"] # Features that aren't numerical
-    numeric_features = ["Total_Stiff", "Age", "BMI", "Thickness", "Skin", "Fat", "Muscle"] # number based data
-    make_interface = [True, False]  # 1st bool - make a gradio second bool - share to the web
+    numeric_features = ["Total_Stiff", "Age", "BMI", "Thickness", "Skin", "Fat", "Muscle"]  # number based data
+    make_interface = [True, False]  # 1st bool - make gradio interface | second bool - share to the web
     plot_shapley = True  # takes a while to run, but generates feature importance plots
     tf_demographics(csv_path, categoric_features, numeric_features, interface=make_interface, shapley=plot_shapley)
