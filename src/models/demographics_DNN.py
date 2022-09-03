@@ -15,7 +15,7 @@ import shap
 import warnings
 
 
-def ohe_df(enc: ColumnTransformer, df: pd.DataFrame):  #, columns):
+def ohe_df(enc: ColumnTransformer, df: pd.DataFrame) -> pd.DataFrame:
     """function to convert a df to a one hot encoded df with appropriate column labels"""
     transformed_array = enc.transform(df)
     initial_colnames_keep = list(df.select_dtypes(include=np.number).columns)  # essentially the numeric labels
@@ -67,7 +67,7 @@ def plot_test_predictions(head_tail: list, model: tf.keras.Model, test_df: pd.Da
     plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"demographics_error_{date}.png"), format='png')
 
 
-def build_and_compile_model(hp: keras_tuner.HyperParameters(), norm: tf.keras.layers.Normalization()):
+def build_and_compile_model(hp: keras_tuner.HyperParameters, norm: tf.keras.layers.Normalization) -> tf.keras.Sequential:
     """Defines the input function to build a deep neural network for tensorflow"""
 
     # Define hyperparameters
@@ -127,10 +127,10 @@ def tf_demographics(csv: str, categorical_features: list, numerical_features: li
     print(dataset.dtypes)
 
     # Plotting of numeric variables, not necessary for DNN
+    head_tail = os.path.split(csv)
     if numerical_features:
         plt.figure()
         sns.pairplot(dataset[numerical_features], diag_kind='kde')
-        head_tail = os.path.split(csv)
         date = datetime.now().strftime("%Y_%m_%d-%I%p")
         print(f'Saving seaborn picture to {os.path.join(head_tail[0], "..", "Pictures", f"sns_plotting_{date}.png")}')
 
