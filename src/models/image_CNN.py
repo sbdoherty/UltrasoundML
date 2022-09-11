@@ -121,13 +121,13 @@ def plot_test_predictions(head_tail, model, test_df, test_labels):
     plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"image_error_{date}.png"), format='png')
 
 
-def build_and_compile_model(hp):
+def build_and_compile_model(hp, lr):
     """Defines the input function to build a deep neural network for tensorflow"""
 
     # Define hyperparameters
     # units = hp.Int("units", min_value=32, max_value=512, step=64)
     # dropout = hp.Float("dropout", min_value=0.1, max_value=0.6, step=0.1)
-    lr = 1e-4  # hp.Choice("lr", values=[1e-2, 1e-3, 1e-4])
+    # lr = 1e-4  # hp.Choice("lr", values=[1e-2, 1e-3, 1e-4])
 
     # Define model architecture
     model = tf.keras.Sequential()
@@ -135,8 +135,8 @@ def build_and_compile_model(hp):
     pretrained_model.trainable = False
     model.add(pretrained_model)
     model.add(layers.GlobalAveragePooling2D())
-    # model.add(layers.Flatten())
-    model.add(layers.Dense(64, activation='relu'))  # kernel_regularizer=regularizers.l2(l2)))
+    model.add(layers.Dropout(0.2))
+    #model.add(layers.Dense(64, activation='relu'))  # kernel_regularizer=regularizers.l2(l2)))
     model.add(layers.Dense(1))
     model.compile(loss='mean_absolute_error',
                   optimizer=tf.keras.optimizers.Adam(lr),
@@ -191,7 +191,8 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
     # Pull and pre process .IMA files to .png for easier usage
     matching_regions = ["AC", "PC"]  # only interested in anterior central and posterior central trials
     output = ima_to_png(raw_image_dir, png_data_dir, dataset, plt_bool=False, matching_strs=matching_regions)
-    output = natsorted(output)  # properly sorts numbers as 1,2,3 instead of 1, 10, 100
+    output = natsorted(output)  # properly sorts numbers as 1,2,3 instead of 1, 10, 100, 2
+
     dataset["filepath"] = output
 
     # to visually inspect if filepath matches sub_id and region
@@ -199,8 +200,8 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
     #     pd.set_option('display.max_colwidth', None)
     #     print(dataset)
 
-    batch_size = 2
-    num_epochs = 10
+    batch_size = 4
+    num_epochs = 100
     train, test = train_test_split(dataset, test_size=0.2, random_state=752)
 
     train, val = train_test_split(train, test_size=0.2, random_state=752)
@@ -219,44 +220,48 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
     val_generator = test_datagen.flow_from_dataframe(dataframe=val, directory=None, has_ext=True,
                                                      x_col="filepath", y_col="Compliance", class_mode="other",
                                                      target_size=(IMAGE_SIZE[0], IMAGE_SIZE[1]),
-                                                     batch_size=batch_size, seed=752)
+                                                     batch_size=batch_size, shuffle=False, seed=752)
 
     test_generator = test_datagen.flow_from_dataframe(dataframe=test, directory=None, has_ext=True,
                                                       x_col="filepath", y_col="Compliance", class_mode="other",
                                                       target_size=(IMAGE_SIZE[0], IMAGE_SIZE[1]),
-                                                      batch_size=batch_size, seed=752)
-    for _ in range(1):
-        fig, axs = plt.subplots(1, 2)
-        img, label = train_generator.next()
-        print(label)
-        print(type(label))
-        print(img.shape)  # (batch size, IMAGESIZE, IMAGESIZE, COLORCHANNELS)
-        axs[0].imshow(img[0])
-        axs[1].imshow(img[1])
-        axs[0].set_xlabel(f"compliance = {label[0]}")
-        axs[1].set_xlabel(f"compliance = {label[1]}")
-        plt.show()
-
-    for _ in range(1):
-        fig, axs = plt.subplots(1, 2)
-        img, label = test_generator.next()
-        print(img.shape)  # (batch size, IMAGESIZE, IMAGESIZE, COLORCHANNELS)
-        axs[0].imshow(img[0])
-        axs[1].imshow(img[1])
-        axs[0].set_xlabel(f"compliance = {label[0]}")
-        axs[1].set_xlabel(f"compliance = {label[1]}")
-        plt.show()
+                                                      batch_size=batch_size, shuffle=False, seed=752)
+    # for _ in range(1):
+    #     fig, axs = plt.subplots(1, 2)
+    #     img, label = train_generator.next()
+    #     print(img.shape)  # (batch size, IMAGESIZE, IMAGESIZE, COLORCHANNELS)
+    #     axs[0].imshow(img[0])
+    #     axs[1].imshow(img[1])
+    #     axs[0].set_xlabel(f"compliance = {label[0]}")
+    #     axs[1].set_xlabel(f"compliance = {label[1]}")
+    #     plt.show()
+    #
+    # for _ in range(1):
+    #     fig, axs = plt.subplots(1, 2)
+    #     img, label = test_generator.next()
+    #     print(img.shape)  # (batch size, IMAGESIZE, IMAGESIZE, COLORCHANNELS)
+    #     axs[0].imshow(img[0])
+    #     axs[1].imshow(img[1])
+    #     axs[0].set_xlabel(f"compliance = {label[0]}")
+    #     axs[1].set_xlabel(f"compliance = {label[1]}")
+    #     plt.show()
 
 
     # create a log directory for a tensorboard visualization
     os.makedirs(os.path.join(head_tail[0], "..", "logs", "image_fit"), exist_ok=True)
     log_path = os.path.join(head_tail[0], "..", "logs", "image_fit")
-    # reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=20)
+    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=1e-3,
+        decay_steps=(train_generator.samples/batch_size)*5,
+        decay_rate=0.9,
+        staircase=True)
     model_checkpoint = tf.keras.callbacks.ModelCheckpoint(log_path, monitor='val_loss', verbose=1, save_freq='epoch',
-                                                          save_weights_only=True, save_best_only=True, mode='min')
+                                                          save_weights_only=True, save_best_only=True, mode='min',
+                                                          restore_best_weights=True)
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_path, histogram_freq=1)
-    #early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=50)
-    model = build_and_compile_model(hp=None)
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=2)
+    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
+    model = build_and_compile_model(hp=None, lr=1e-3)
 
     # define hyperparameters through keras tuner
     #hp = keras_tuner.HyperParameters()
@@ -286,22 +291,22 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
     # model = tuner.hypermodel.build(best_hp)
 
     history = model.fit(
-        train_generator, verbose=2, batch_size=2, steps_per_epoch=train_generator.samples / batch_size,
+        train_generator, verbose=2, steps_per_epoch=train_generator.samples / batch_size,
         validation_data=val_generator, validation_steps=val_generator.samples / batch_size,
-        epochs=num_epochs, shuffle=True, callbacks=[model_checkpoint, tensorboard_callback]
+        epochs=num_epochs, shuffle=True, callbacks=[model_checkpoint, reduce_lr, early_stop, tensorboard_callback]
     )
     # visualize model loss
     plot_loss(head_tail, history)
 
     # print out metrics on how the model performed on the test data
-    score = model.evaluate(test, verbose=2)
+    score = model.evaluate(test_generator, verbose=2)
     print(f"model loss is: {score[0]}")
     print(f"model mean absolute error is: {score[1]}")
     print(f"model mean squared error is: {score[2]}")
     print(f"model mean average percent error is {score[3]}")
 
     # Plot predictions vs true values to visually assess accuracy and histogram of APE distribution
-    plot_test_predictions(head_tail, model, test, test)
+    plot_test_predictions(head_tail, model, test_generator, test["Compliance"])
 
     # # Plot different shapley figures for feature importance
     # if shapley:
