@@ -5,7 +5,7 @@ import os
 from functools import partial
 import tensorflow as tf
 import keras_tuner
-from keras import layers, regularizers
+from keras import layers
 import seaborn as sns
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
@@ -16,65 +16,110 @@ import warnings
 
 
 def ohe_df(enc: ColumnTransformer, df: pd.DataFrame) -> pd.DataFrame:
-    """function to convert a df to a one hot encoded df with appropriate column labels"""
+    """
+    function to convert a df to a one hot encoded df with appropriate column labels
+    @param enc: the encoder that will one hot encode the variables into a binary representation
+    @param df: the training dataframe
+    @return: the one hot encoded training data
+    """
     transformed_array = enc.transform(df)
-    initial_colnames_keep = list(df.select_dtypes(include=np.number).columns)  # essentially the numeric labels
-    new_colnames = np.concatenate(enc.named_transformers_['OHE'].categories_).tolist()   # unique category classes
+    initial_colnames_keep = list(
+        df.select_dtypes(include=np.number).columns
+    )  # essentially the numeric labels
+    new_colnames = np.concatenate(
+        enc.named_transformers_["OHE"].categories_
+    ).tolist()  # unique category classes
     all_colnames = new_colnames + initial_colnames_keep
     df = pd.DataFrame(transformed_array, index=df.index, columns=all_colnames)
 
     return df
 
 
-def plot_loss(head_tail: list, history: tf.keras.callbacks.History):
-    """Visualize error decrease over training process """
+def plot_loss(head_tail: tuple[str], history: tf.keras.callbacks.History):
+    """
+    Visualize error decrease over training process
+    @param head_tail: list of input path variables to determine where to save the image
+    @param history: model training results object
+    @return: Nothing
+    """
     plt.figure(2)
-    plt.plot(history.history['loss'], label='loss')
-    plt.plot(history.history['val_loss'], label='validation loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Error')
+    plt.plot(history.history["loss"], label="loss")
+    plt.plot(history.history["val_loss"], label="validation loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Error")
     plt.legend()
     plt.grid(True)
     date = datetime.now().strftime("%Y_%m_%d-%I%p")
 
     if not os.path.exists(os.path.join(head_tail[0], "..", "Pictures")):
         os.mkdir(os.path.join(head_tail[0], "..", "Pictures"))
-    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"demographics_loss_history_{date}.png"))
+    plt.savefig(
+        os.path.join(
+            head_tail[0], "..", "Pictures", f"demographics_loss_history_{date}.png"
+        )
+    )
 
 
-def plot_test_predictions(head_tail: list, model: tf.keras.Model, test_df: pd.DataFrame, test_labels: pd.DataFrame):
-    """Function to visualize the quality of predictions on the test data"""
+def plot_test_predictions(
+    head_tail: tuple[str],
+    model: tf.keras.Model,
+    test_df: pd.DataFrame,
+    test_labels: pd.DataFrame,
+):
+    """
+    Function to visualize the quality of predictions on the test data
+    @param head_tail: the path variables to save the images
+    @param model: the tf deep neural network object
+    @param test_df: the dataframe that the model has not seen, which it will make a prediction on
+    @param test_labels: The correct values for each test data sample, which will be used to test prediction accuracy
+    @return: Nothing
+    """
     test_predictions = model.predict(test_df).flatten()
     plt.figure()
     plt.scatter(test_predictions, test_labels)
 
-    plt.xlabel('Predicted Compliance (mm/MPa)')
-    plt.ylabel('Experimental Compliance (mm/MPa)')
+    plt.xlabel("Predicted Compliance (mm/MPa)")
+    plt.ylabel("Experimental Compliance (mm/MPa)")
     lims = [0, 3500]
     plt.xlim(lims)
     plt.ylim(lims)
-    plt.plot(lims, lims, linestyle='dashed', color='black', linewidth=2)
+    plt.plot(lims, lims, linestyle="dashed", color="black", linewidth=2)
     date = datetime.now().strftime("%Y_%m_%d-%I%p")
 
-    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"compliance_DNN_demographics_{date}.png"), format='png')
+    plt.savefig(
+        os.path.join(
+            head_tail[0], "..", "Pictures", f"compliance_DNN_demographics_{date}.png"
+        ),
+        format="png",
+    )
 
     # Second plot of histogram mape
     plt.figure()
-    error = abs(test_predictions - test_labels)/test_labels * 100
-    plt.hist(error, bins=25, edgecolor='black')
-    plt.xlabel('Absolute Percent Error')
-    plt.ylabel('Count')
-    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"demographics_error_{date}.png"), format='png')
+    error = abs(test_predictions - test_labels) / test_labels * 100
+    plt.hist(error, bins=25, edgecolor="black")
+    plt.xlabel("Absolute Percent Error")
+    plt.ylabel("Count")
+    plt.savefig(
+        os.path.join(head_tail[0], "..", "Pictures", f"demographics_error_{date}.png"),
+        format="png",
+    )
 
 
-def build_and_compile_model(hp: keras_tuner.HyperParameters, norm: tf.keras.layers.Normalization) -> tf.keras.Sequential:
-    """Defines the input function to build a deep neural network for tensorflow"""
+def build_and_compile_model(
+    hp: keras_tuner.HyperParameters(), norm: tf.keras.layers.Normalization()
+) -> tf.keras.Sequential():
+    """
+    Defines the input function to build a deep neural network for tensorflow
+    @param hp: the hyper parameter tuner object
+    @param norm: The normalization layer that has been fit to the training data
+    @return: a tensorflow deep neural network model
+    """
 
     # Define hyperparameters
     units = hp.Int("units", min_value=32, max_value=512, step=64)
     dropout = hp.Float("dropout", min_value=0.1, max_value=0.6, step=0.1)
     lr = hp.Choice("lr", values=[1e-2, 1e-3, 1e-4])
-    #l2 = hp.Float("l2", min_value=1e-5, max_value=1e-3, sampling="log")
+    # l2 = hp.Float("l2", min_value=1e-5, max_value=1e-3, sampling="log")
     gaussian_noise = hp.Boolean("gaussian_noise")
 
     # Define model architecture
@@ -82,27 +127,35 @@ def build_and_compile_model(hp: keras_tuner.HyperParameters, norm: tf.keras.laye
     model.add(norm)
     if gaussian_noise:
         model.add(layers.GaussianNoise(0.1))
-    model.add(layers.Dense(units=units))#, kernel_regularizer=regularizers.l2(l2)))
+    model.add(layers.Dense(units=units))  # , kernel_regularizer=regularizers.l2(l2)))
     model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
     model.add(layers.Dropout(rate=dropout))
-    model.add(layers.Dense(units=units))#, kernel_regularizer=regularizers.l2(l2)))
+    model.add(layers.Dense(units=units))  # , kernel_regularizer=regularizers.l2(l2)))
     model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
     model.add(layers.Dropout(rate=dropout))
     model.add(layers.Dense(1))
-    model.compile(loss='mean_absolute_error',
-                  optimizer=tf.keras.optimizers.Adam(lr),
-                  metrics=["mae", "mse", "mape"])
+    model.compile(
+        loss="mean_absolute_error",
+        optimizer=tf.keras.optimizers.Adam(lr),
+        metrics=["mae", "mse", "mape"],
+    )
     model.summary()
     return model
 
 
-def tf_demographics(csv: str, categorical_features: list, numerical_features: list, interface=[False, False], shapley=False):
+def tf_demographics(
+    csv: str,
+    categorical_features: list,
+    numerical_features: list,
+    interface=[False, False],
+    shapley=False,
+):
     """Build deep neural network from a csv file, and perform plotting functions and shapley/gradio outputs
-       csv: path to the data file
-       categorical features: non numeric feature names that will be pulled from the csv into the dataframe
-       numerical features: numeric feature names that will be pulled from the csv into dataframe
-       interface: first bool: do you want gradio at all? second bool: do you want to push gradio app to web?
-       shapley: do you want to try out feature importance plots? """
+       @param csv: path to the data file, pulled from https://simtk.org/svn/multis/studies/LayerEffectonStiffness/dat/
+       @param categorical features: non numeric feature names that will be pulled from the csv into the dataframe
+       @param numerical features: numeric feature names that will be pulled from the csv into dataframe
+       @param interface: first bool: do you want gradio at all? second bool: do you want to push gradio app to web?
+       @param shapley: do you want to try out feature importance plots? """
 
     # Read in the master_csv file
     dataset = pd.read_csv(csv)
@@ -112,15 +165,15 @@ def tf_demographics(csv: str, categorical_features: list, numerical_features: li
 
     # Filter the csv by the desired features
     dataset = dataset[features]
-    dataset = dataset.rename(columns={'Total_Stiff': 'Compliance'})
-    dataset['Compliance'] = 1/dataset['Compliance']
+    dataset = dataset.rename(columns={"Total_Stiff": "Compliance"})
+    dataset["Compliance"] = 1 / dataset["Compliance"]
 
     i = numerical_features.index("Total_Stiff")
     numerical_features[i] = "Compliance"
     i = features.index("Total_Stiff")
     features[i] = "Compliance"
 
-    dataset.apply(lambda x: pd.to_numeric(x, errors='coerce').notnull().all())
+    dataset.apply(lambda x: pd.to_numeric(x, errors="coerce").notnull().all())
     dataset = dataset.dropna()
     print(dataset.head())  # Show first five entries and some columns
     print(dataset.shape)
@@ -130,17 +183,22 @@ def tf_demographics(csv: str, categorical_features: list, numerical_features: li
     head_tail = os.path.split(csv)
     if numerical_features:
         plt.figure()
-        sns.pairplot(dataset[numerical_features], diag_kind='kde')
+        sns.pairplot(dataset[numerical_features], diag_kind="kde")
         date = datetime.now().strftime("%Y_%m_%d-%I%p")
-        print(f'Saving seaborn picture to {os.path.join(head_tail[0], "..", "Pictures", f"sns_plotting_{date}.png")}')
+        print(
+            f'Saving seaborn picture to {os.path.join(head_tail[0], "..", "Pictures", f"sns_plotting_{date}.png")}'
+        )
 
         # Check for valid dir
         os.makedirs(os.path.join(head_tail[0], "..", "Pictures"), exist_ok=True)
-        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"sns_plotting_{date}.png"), format='png')
+        plt.savefig(
+            os.path.join(head_tail[0], "..", "Pictures", f"sns_plotting_{date}.png"),
+            format="png",
+        )
         plt.close()
 
     # Remove null values from the dataset
-    dataset.apply(lambda x: pd.to_numeric(x, errors='coerce').notnull().all())
+    dataset.apply(lambda x: pd.to_numeric(x, errors="coerce").notnull().all())
     dataset = dataset.reset_index(drop=True)
     # dataset.to_csv(r"F:\WorkData\MULTIS\master_csv\001_MasterList_weka.csv") # Export to clean cs
 
@@ -152,19 +210,32 @@ def tf_demographics(csv: str, categorical_features: list, numerical_features: li
             print(f"unique values are: {vocabulary}")
 
     # Encode non-numeric data with one-hot encoding
-    enc = ColumnTransformer([("OHE", OneHotEncoder(sparse=False, handle_unknown="ignore"), categorical_features)],
-                            remainder="passthrough")
+    enc = ColumnTransformer(
+        [
+            (
+                "OHE",
+                OneHotEncoder(sparse=False, handle_unknown="ignore"),
+                categorical_features,
+            )
+        ],
+        remainder="passthrough",
+    )
     enc.fit(dataset)  # fit the encoder to the datasets variables
     print(type(enc))
 
     # call function to onehot encode the data
-    ohe_dataset = ohe_df(enc, dataset) #, categorical_features)
+    ohe_dataset = ohe_df(enc, dataset)  # , categorical_features)
 
     # Split training and testing data
-    train_data, test_data = train_test_split(ohe_dataset, train_size=0.8, random_state=752)
+    train_data, test_data = train_test_split(
+        ohe_dataset, train_size=0.8, random_state=752
+    )
     print(f"train data shape is {train_data.shape}")
     print(f"test data shape is {test_data.shape}")
-    print(train_data.describe().transpose()[['mean', 'std']])
+    print(train_data.describe().transpose()[["mean", "std"]])
+    # Save training data for mixed effect models
+    train_data.to_csv(os.path.join(head_tail[0], "train_data.csv"))
+    test_data.to_csv(os.path.join(head_tail[0], "test_data.csv"))
 
     # Pop off the compliance metric, which is the inverse our output
     train_labels = train_data.pop("Compliance")
@@ -178,48 +249,68 @@ def tf_demographics(csv: str, categorical_features: list, numerical_features: li
     # create a log directory for a tensorboard visualization
     os.makedirs(os.path.join(head_tail[0], "..", "logs", "fit"), exist_ok=True)
     log_path = os.path.join(head_tail[0], "..", "logs", "fit")
-    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=20)
-    model_checkpoint = tf.keras.callbacks.ModelCheckpoint(log_path, monitor='val_loss', verbose=2,
-                                                          save_weights_only=True, save_best_only=True, mode='min')
-    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_path, histogram_freq=1)
-    early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=2, patience=50)
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+        monitor="val_loss", factor=0.1, patience=20
+    )
+    model_checkpoint = tf.keras.callbacks.ModelCheckpoint(
+        log_path,
+        monitor="val_loss",
+        verbose=2,
+        save_weights_only=True,
+        save_best_only=True,
+        mode="min",
+    )
+    tensorboard_callback = tf.keras.callbacks.TensorBoard(
+        log_dir=log_path, histogram_freq=1
+    )
+    early_stop = tf.keras.callbacks.EarlyStopping(
+        monitor="val_loss", mode="min", verbose=2, patience=50
+    )
 
     # define hyperparameters through keras tuner
     hp = keras_tuner.HyperParameters()
-    batch_size = 32
+    batch_size = 16
 
     # define tuning model for hyperparameter search
     build_model = partial(build_and_compile_model, norm=normalizer)
     tuner = keras_tuner.tuners.RandomSearch(
         hypermodel=build_model,
-        objective='val_loss',
+        objective="val_loss",
         max_trials=10,
         executions_per_trial=2,
         overwrite=True,
         directory=log_path,
-        project_name="TestingKerasTuner")
+        project_name="TestingKerasTuner",
+    )
     tuner.search_space_summary()
 
     # The call to search has the same signature as model.fit()
-    tuner.search(train_data,
-                 train_labels,
-                 validation_split=0.2,
-                 verbose=2, epochs=1000,
-                 shuffle=True, batch_size=batch_size,
-                 callbacks=[early_stop, model_checkpoint, tensorboard_callback, reduce_lr]
+    tuner.search(
+        train_data,
+        train_labels,
+        validation_split=0.2,
+        verbose=2,
+        epochs=1000,
+        shuffle=True,
+        batch_size=batch_size,
+        callbacks=[early_stop, model_checkpoint, tensorboard_callback, reduce_lr],
     )
     # retrieve best result and visualize top values
     tuner.results_summary()
-    best_hp = tuner.get_best_hyperparameters()[0]  # get the best hp and refit model for plotting
+    best_hp = tuner.get_best_hyperparameters()[
+        0
+    ]  # get the best hp and refit model for plotting
     model = tuner.hypermodel.build(best_hp)
 
     history = model.fit(
         train_data,
         train_labels,
         validation_split=0.2,
-        verbose=0, epochs=1000,
-        shuffle=True, batch_size=32,
-        callbacks=[early_stop, model_checkpoint, tensorboard_callback, reduce_lr]
+        verbose=0,
+        epochs=1000,
+        shuffle=True,
+        batch_size=16,
+        callbacks=[early_stop, model_checkpoint, tensorboard_callback, reduce_lr],
     )
     # visualize model loss
     plot_loss(head_tail, history)
@@ -237,7 +328,9 @@ def tf_demographics(csv: str, categorical_features: list, numerical_features: li
     # Plot different shapley figures for feature importance
     if shapley:
         print(test_data.iloc[0])
-        background = train_data.head(100)  # data is already shuffled, no need to randomly choose?
+        background = train_data.head(
+            100
+        )  # data is already shuffled, no need to randomly choose?
 
         # hide the sklearn future deprecation warning as it clogs the terminal
         with warnings.catch_warnings():
@@ -247,34 +340,67 @@ def tf_demographics(csv: str, categorical_features: list, numerical_features: li
 
         # visualize first test data point: https://github.com/slundberg/shap/issues/1420. waterfall legacy seems to plot
         fig = plt.figure()
-        fig = shap.plots._waterfall.waterfall_legacy(explainer.expected_value[0], shap_values[0][0], test_data.iloc[0],
-                                               max_display=20, show=False)
+        fig = shap.plots._waterfall.waterfall_legacy(
+            explainer.expected_value[0],
+            shap_values[0][0],
+            test_data.iloc[0],
+            max_display=20,
+            show=False,
+        )
         date = datetime.now().strftime("%Y_%m_%d-%I%p")
-        print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_waterfall_{date}.png")}')
-        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_waterfall_{date}.png"), format='png')
+        print(
+            f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_waterfall_{date}.png")}'
+        )
+        plt.savefig(
+            os.path.join(
+                head_tail[0], "..", "Pictures", f"shapley_waterfall_{date}.png"
+            ),
+            format="png",
+        )
         plt.close()
-
 
         # Generate a force plot for the same entry
         fig2 = plt.figure()
-        fig2 = shap.force_plot(explainer.expected_value[0], shap_values[0][0], test_data.iloc[0],
-                               matplotlib=True, show=False)
-        print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_force_{date}.png")}')
-        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_force_{date}.png"), format='png')
+        fig2 = shap.force_plot(
+            explainer.expected_value[0],
+            shap_values[0][0],
+            test_data.iloc[0],
+            matplotlib=True,
+            show=False,
+        )
+        print(
+            f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_force_{date}.png")}'
+        )
+        plt.savefig(
+            os.path.join(head_tail[0], "..", "Pictures", f"shapley_force_{date}.png"),
+            format="png",
+        )
         plt.close()
 
         # Generate a summary plot for all entries
         fig3 = plt.figure()
         fig3 = shap.summary_plot(shap_values, train_data, show=False)
-        print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_summary_{date}.png")}')
-        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_summary_{date}.png"), format='png')
+        print(
+            f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_summary_{date}.png")}'
+        )
+        plt.savefig(
+            os.path.join(head_tail[0], "..", "Pictures", f"shapley_summary_{date}.png"),
+            format="png",
+        )
         plt.close()
 
         # Generate a force plot for the same entry
         fig4 = plt.figure()
         fig4 = shap.summary_plot(shap_values[0], features=test_data.columns, show=False)
-        print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_beeswarm_{date}.png")}')
-        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_beeswarm_{date}.png"), format='png')
+        print(
+            f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_beeswarm_{date}.png")}'
+        )
+        plt.savefig(
+            os.path.join(
+                head_tail[0], "..", "Pictures", f"shapley_beeswarm_{date}.png"
+            ),
+            format="png",
+        )
         plt.close()
 
     # Generate a gradio web interface if requested
@@ -290,11 +416,13 @@ def tf_demographics(csv: str, categorical_features: list, numerical_features: li
             pred_df = pd.DataFrame(data=[features], columns=cols)
 
             # Convert user input to one hot encoded values so predictions can be made
-            ohe_pred = ohe_df(enc, pred_df, categorical_features)
+            ohe_pred = ohe_df(enc, pred_df)
             ohe_pred.drop(["Compliance"], axis=1, inplace=True)
 
             # Sanity check that variables look correct
-            with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+            with pd.option_context(
+                "display.max_rows", None, "display.max_columns", None
+            ):
                 print(ohe_pred)
             pred = model.predict([ohe_pred])
 
@@ -307,29 +435,62 @@ def tf_demographics(csv: str, categorical_features: list, numerical_features: li
             if variable != "SubID":
                 if dataset.loc[:, variable].dtype == "object":
                     vocabulary = list(dataset.loc[:, variable].unique())
-                    input_list.append(gr.inputs.Dropdown(label=f"Choose a value for {variable}", choices=vocabulary))
+                    input_list.append(
+                        gr.inputs.Dropdown(
+                            label=f"Choose a value for {variable}", choices=vocabulary
+                        )
+                    )
             else:
-                input_list.append(gr.inputs.Textbox(label=f"Choose a value for {variable} (Enter 999 or higher for new subjects)"))
+                input_list.append(
+                    gr.inputs.Textbox(
+                        label=f"Choose a value for {variable} (Enter 999 or higher for new subjects)"
+                    )
+                )
 
         #  Create number menus for numerical inputs
         for variable in numerical_features:
             if variable != "Compliance":
                 min_val = min(train_data[variable])
                 max_val = max(train_data[variable])
-                input_list.append(gr.inputs.Number(label=f"Choose a value for {variable}, with acceptable range from {min_val} to {max_val}"))
+                input_list.append(
+                    gr.inputs.Number(
+                        label=f"Choose a value for {variable}, with acceptable range from {min_val} to {max_val}"
+                    )
+                )
             else:
                 pass  # dummy value in make_prediction just to satisfy one hot encoder. Better solution possible?
 
         #  Launch gradio interface on the web
         app = gr.Interface(fn=make_prediction, inputs=input_list, outputs="text")
-        app.launch(share=interface[1]) # share=True to display on the gradio webpage. Can share on huggingfaces
+        app.launch(
+            share=interface[1]
+        )  # share=True to display on the gradio webpage. Can share on huggingfaces
 
 
 if __name__ == "__main__":
     csv_path = r"F:\WorkData\MULTIS\master_csv\001_MasterList_indentation_orig.csv"
     #  lists are sorted alphabetically so order does not matter
-    categoric_features = ["Location", "Gender", "ActivityLevel", "Race", "Ethnicity"] # Features that aren't numerical
-    numeric_features = ["Total_Stiff", "Age", "BMI"]  # Features defined by a range of numbers
-    make_interface = [True, False]  # 1st bool - make a gradio second bool - share to the web
+    categoric_features = [
+        "Location",
+        "Gender",
+        "ActivityLevel",
+        "Race",
+        "Ethnicity",
+    ]  # Features that aren't numerical
+    numeric_features = [
+        "Total_Stiff",
+        "Age",
+        "BMI",
+    ]  # Features defined by a range of numbers
+    make_interface = [
+        True,
+        False,
+    ]  # 1st bool - make a gradio second bool - share to the web
     plot_shapley = True  # takes a while to run, but generates feature importance plots
-    tf_demographics(csv_path, categoric_features, numeric_features, interface=make_interface, shapley=plot_shapley)
+    tf_demographics(
+        csv_path,
+        categoric_features,
+        numeric_features,
+        interface=make_interface,
+        shapley=plot_shapley,
+    )
