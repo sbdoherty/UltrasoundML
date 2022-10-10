@@ -5,7 +5,7 @@ import os
 from functools import partial
 import tensorflow as tf
 import keras_tuner
-from keras import layers
+from keras import layers, regularizers
 import seaborn as sns
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
@@ -35,7 +35,7 @@ def ohe_df(enc: ColumnTransformer, df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def plot_loss(head_tail: tuple[str], history: tf.keras.callbacks.History):
+def plot_loss(head_tail: "tuple[str]", history: tf.keras.callbacks.History):
     """
     Visualize error decrease over training process
     @param head_tail: list of input path variables to determine where to save the image
@@ -61,7 +61,7 @@ def plot_loss(head_tail: tuple[str], history: tf.keras.callbacks.History):
 
 
 def plot_test_predictions(
-    head_tail: tuple[str],
+    head_tail: 'tuple[str]',
     model: tf.keras.Model,
     test_df: pd.DataFrame,
     test_labels: pd.DataFrame,
@@ -116,10 +116,10 @@ def build_and_compile_model(
     """
 
     # Define hyperparameters
-    units = hp.Int("units", min_value=32, max_value=512, step=64)
+    units = hp.Int("units", min_value=32, max_value=256, step=32)
     dropout = hp.Float("dropout", min_value=0.1, max_value=0.6, step=0.1)
     lr = hp.Choice("lr", values=[1e-2, 1e-3, 1e-4])
-    # l2 = hp.Float("l2", min_value=1e-5, max_value=1e-3, sampling="log")
+    l2 = hp.Float("l2", min_value=1e-5, max_value=1e-2, sampling="log")
     gaussian_noise = hp.Boolean("gaussian_noise")
 
     # Define model architecture
@@ -127,10 +127,10 @@ def build_and_compile_model(
     model.add(norm)
     if gaussian_noise:
         model.add(layers.GaussianNoise(0.1))
-    model.add(layers.Dense(units=units))  # , kernel_regularizer=regularizers.l2(l2)))
+    model.add(layers.Dense(units=units, kernel_regularizer=regularizers.l2(l2)))
     model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
     model.add(layers.Dropout(rate=dropout))
-    model.add(layers.Dense(units=units))  # , kernel_regularizer=regularizers.l2(l2)))
+    model.add(layers.Dense(units=units, kernel_regularizer=regularizers.l2(l2)))
     model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
     model.add(layers.Dropout(rate=dropout))
     model.add(layers.Dense(1))
@@ -276,7 +276,7 @@ def tf_demographics(
     tuner = keras_tuner.tuners.RandomSearch(
         hypermodel=build_model,
         objective="val_loss",
-        max_trials=10,
+        max_trials=20,
         executions_per_trial=2,
         overwrite=True,
         directory=log_path,
@@ -297,9 +297,8 @@ def tf_demographics(
     )
     # retrieve best result and visualize top values
     tuner.results_summary()
-    best_hp = tuner.get_best_hyperparameters()[
-        0
-    ]  # get the best hp and refit model for plotting
+    # get the best hp and refit model for plotting
+    best_hp = tuner.get_best_hyperparameters()[0]
     model = tuner.hypermodel.build(best_hp)
 
     history = model.fit(

@@ -112,10 +112,10 @@ def build_and_compile_model(
     """
 
     # Define hyperparameters
-    units = hp.Int("units", min_value=32, max_value=512, step=64)
+    units = hp.Int("units", min_value=32, max_value=256, step=64)
     dropout = hp.Float("dropout", min_value=0.1, max_value=0.6, step=0.1)
     lr = hp.Choice("lr", values=[1e-2, 1e-3, 1e-4])
-    l2 = hp.Float("l2", min_value=1e-5, max_value=1e-3, sampling="log")
+    l2 = hp.Float("l2", min_value=1e-5, max_value=1e-2, sampling="log")
     gaussian_noise = hp.Boolean("gaussian_noise")
 
     # Define model architecture
@@ -275,7 +275,7 @@ def tf_thickness(
     tuner = keras_tuner.tuners.RandomSearch(
         hypermodel=build_model,
         objective="val_loss",
-        max_trials=10,
+        max_trials=20,
         executions_per_trial=2,
         overwrite=True,
         directory=log_path,
@@ -294,11 +294,11 @@ def tf_thickness(
         batch_size=batch_size,
         callbacks=[early_stop, model_checkpoint, tensorboard_callback, reduce_lr],
     )
+
     # retrieve best result and visualize top values
     tuner.results_summary()
-    best_hp = tuner.get_best_hyperparameters()[
-        0
-    ]  # get the best hp and refit model for plotting
+    # get the best hp and refit model for plotting
+    best_hp = tuner.get_best_hyperparameters()[0]
     model = tuner.hypermodel.build(best_hp)
 
     history = model.fit(
