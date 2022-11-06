@@ -3,7 +3,7 @@
 
 Base data comes from: https://multisbeta.stanford.edu/
 
-Linear Models were developed in a forthcoming publication (TBA).
+Linear mixed models were developed in a forthcoming publication (TBA).
 
 ### 4 separate deep learning models were generated:
 
