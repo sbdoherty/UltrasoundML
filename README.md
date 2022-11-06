@@ -1,7 +1,7 @@
 # UltrasoundML
 ## Predictions of soft tissue indentation stiffness using ML and ultrasound data. 
 
-Base data comes from: Erdemir, A. & Neumann, E SimTK https://doi.org/10.18735/S5R97F (2018).
+Base data comes from: *Erdemir, A. & Neumann, E SimTK https://doi.org/10.18735/S5R97F (2018).*
 
 Linear mixed models were developed in a forthcoming publication (TBA).
 
