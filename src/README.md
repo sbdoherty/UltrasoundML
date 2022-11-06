@@ -1,2 +1,2 @@
 # UltrasoundML
-A repository for my CSU thesis. 
+models -> tensorflow code for neural networks
