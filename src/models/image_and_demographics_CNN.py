@@ -163,7 +163,7 @@ def build_and_compile_model(
     model.add(pretrained_model)
     model.add(layers.GlobalAveragePooling2D())
     model.add(layers.Dropout(dropout))
-    model.mer
+    model.merge here
     model.add(layers.Dense(units))
     model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
 
