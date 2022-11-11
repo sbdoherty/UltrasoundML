@@ -3,28 +3,49 @@ import numpy as np
 import pandas as pd
 import os
 import tensorflow as tf
-from tensorflow.compat.v1.keras.backend import get_session
 import keras_tuner
-from keras import layers, regularizers
+from keras import layers
+from keras.models import Model
+from keras.layers import GlobalAveragePooling2D, PReLU
+from keras.layers.core import *
 from keras.preprocessing.image import ImageDataGenerator
-import seaborn as sns
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import ColumnTransformer
 from datetime import datetime
 from alibi.explainers import IntegratedGradients
-import warnings
-import random
 import pydicom
 from pydicom.pixel_data_handlers import convert_color_space
 import cv2
 from natsort import natsorted
-import functools
+from functools import partial
 
 # constant variables
 IMAGE_SIZE = [676, 676]
 COLOR_CHANNELS = 3
 
 
-def ima_to_png(ima_dir: str, png_dir: str, df: pd.DataFrame(), plt_bool=False, matching_strs=[]) -> list:
+def ohe_df(enc: ColumnTransformer, df: pd.DataFrame) -> pd.DataFrame:
+    """
+    function to convert a df to a one hot encoded df with appropriate column labels
+    @param enc: the encoder that will one hot encode the variables into a binary representation
+    @param df: the training dataframe
+    @return: the one hot encoded training data
+    """
+    transformed_array = enc.transform(df)
+    initial_colnames_keep = list(
+        df.select_dtypes(include=np.number).columns
+    )  # essentially the numeric labels
+    new_colnames = np.concatenate(
+        enc.named_transformers_["OHE"].categories_
+    ).tolist()  # unique category classes
+    all_colnames = new_colnames + initial_colnames_keep
+    df = pd.DataFrame(transformed_array, index=df.index, columns=all_colnames)
+
+    return df
+
+
+def ima_to_png(ima_dir: str, png_dir: str, df: pd.DataFrame(), plt_bool=False, matching_strs=[]) -> (list, pd.DataFrame()):
     """function to convert ima files to png for compatibility with tf. tf only supports 4 image types officially
     @param ima_dir: where the raw ima files are located. Pull from multis gamma
     @param png_dir: where to save the converted files
@@ -33,9 +54,11 @@ def ima_to_png(ima_dir: str, png_dir: str, df: pd.DataFrame(), plt_bool=False, m
     @param matching_strs: which files are of interest? I was only focusing on anterior central and posterior central
                          indentation trials
 
-    @return output: a list of files to be analyzed
+    @return output: a list of files to be analyzed and df with physical coord column
     """
     output = []
+    df["PhysDims"] = np.nan
+
     for root, _, files in os.walk(ima_dir):
         if files:
             wanted_regions = [x for x in files if any(val in x for val in matching_strs)]
@@ -50,6 +73,14 @@ def ima_to_png(ima_dir: str, png_dir: str, df: pd.DataFrame(), plt_bool=False, m
                     if not df[(df['SubID'] == sub_id) & (df['Location'] == location)].empty:
                         # save as png for easier image augmentation
                         all_dcm = pydicom.read_file(os.path.join(root, file))
+
+                        # add physical coordinates to model
+                        for i, line in enumerate(str(all_dcm[0x0018, 0x6011].value[0]).split("\n")):
+                            if "Physical Delta X" in line:
+                                phys_dim = line.split("FD: ")[-1]
+                                phys_dim = float(phys_dim)
+                                df.loc[(df.SubID == sub_id) & (df.Location == location), "PhysDims"] = phys_dim
+
                         orig_img = convert_color_space(all_dcm.pixel_array, "YBR_FULL_422", "RGB")  # convert to RGB
                         height, width, _ = np.shape(orig_img)
                         # crop out text
@@ -85,7 +116,7 @@ def ima_to_png(ima_dir: str, png_dir: str, df: pd.DataFrame(), plt_bool=False, m
                     else:
                         # the first 5 subjects and any row with null are excluded to keep df consistent between models
                         pass
-    return list(set(output))  # duplicates in my list?
+    return (list(set(output)), df)  # duplicates in my list?
 
 
 def plot_loss(head_tail, history):
@@ -142,9 +173,7 @@ def plot_test_predictions(head_tail, model, test_df, test_labels):
     plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"fine_tune_image_error_{date}.png"), format='png')
 
 
-def build_and_compile_model(
-        hp: keras_tuner.HyperParameters(), norm: tf.keras.layers.Normalization()
-        ) -> tf.keras.Sequential():
+def build_and_compile_model(hp: keras_tuner.HyperParameters(), norm: tf.keras.layers.Normalization()) -> tf.keras.Sequential():
     """
     Defines the input function to build a deep neural network for tensorflow
     @param hp: the hyper parameter tuner object
@@ -157,21 +186,44 @@ def build_and_compile_model(
     dropout = hp.Float("dropout", min_value=0.1, max_value=0.6, step=0.1)
 
     # Define model architecture
+
+    # model.add(layers.GlobalAveragePooling2D())
+    # model.add(layers.Dropout(dropout))
+    # model.add(layers.Dense(units))
+    # combined_model = layers.concatenate([model.output, norm], axis=-1)
+    # combined_model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
+    # model.add(layers.Dropout(dropout))
+    # combined_model.add(layers.Dense(units))
+    # combined_model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
+    # model.add(layers.Dropout(dropout))
+    # combined_model.add(layers.Dense(units))
+    # combined_model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
+    # combined_model.add(layers.Dense(1))
     model = tf.keras.Sequential()
     pretrained_model = tf.keras.applications.Xception(input_shape=[*IMAGE_SIZE, COLOR_CHANNELS], include_top=False)
     pretrained_model.trainable = False
-    model.add(pretrained_model)
-    model.add(layers.GlobalAveragePooling2D())
-    model.add(layers.Dropout(dropout))
-    model.merge here
-    model.add(layers.Dense(units))
-    model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
+    gap = GlobalAveragePooling2D()(pretrained_model)
+    gap = Dropout(dropout)(gap)
+    gap = Dense(units)(gap)
+    img_model = PReLU(alpha_initializer=tf.initializers.constant(0.1))(gap)
 
-    model.add(layers.Dense(1))
+    first_part_output = Flatten()(img_model)
+    combined_model = layers.concatenate([first_part_output.output, norm])
+    cm = Dropout(dropout)(combined_model)
+    cm = Dense(units*2)(cm)
+    cm = PReLU(alpha_initializer=tf.initializers.constant(0.1))(cm)
+    cm = Dropout(dropout)(cm)
+    cm = Dense(units)(cm)
+    cm = PReLU(alpha_initializer=tf.initializers.constant(0.1))(cm)
+    cm = Dropout(dropout)(cm)
+    predictions = Dense(1)(cm)
+    model = Model(inputs=[pretrained_model, norm], outputs=predictions)
+
     model.compile(loss='mean_absolute_error',
                   optimizer=tf.keras.optimizers.Adam(lr),
                   metrics=["mae", "mse", "mape"])
-    model.summary()
+    combined_model.summary()
+    tf.keras.utils.plot_model(model, to_file="F:\WorkData\MULTIS\Pictures\model_architecture.png")
     return model
 
 
@@ -183,7 +235,7 @@ def compile_final_model(model:tf.keras.Sequential()) -> tf.keras.Sequential():
     """
     # Define hyperparameters
     lr = 1e-5
-    model.load_weights(r"F:\WorkData\MULTIS\logs\image_fit\image_CNN_initial_weights.hdf5")
+    model.load_weights(r"F:\WorkData\MULTIS\logs\image_fit\image_demo_initial_weights.hdf5")
 
     model.compile(loss='mean_absolute_error',
                   optimizer=tf.keras.optimizers.Adam(lr),
@@ -192,8 +244,7 @@ def compile_final_model(model:tf.keras.Sequential()) -> tf.keras.Sequential():
     return model
 
 
-def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_features,
-             interface=[False, False], shapley=False):
+def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_features, interface=[False, False], shapley=False):
     """
     Main script function for data processing, deep neural net model building, and result generation
     @param csv: the input csv file containing each subject data, pulled from:
@@ -239,30 +290,32 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
     print(dataset.shape)
     print(dataset.dtypes)
 
-    # train_data, test_data = train_test_split(dataset, train_size=0.8, random_state=752)
-    # print(f"train data shape is {train_data.shape}")
-    # print(f"test data shape is {test_data.shape}")
-    print(dataset.describe().transpose()[['mean', 'std']])
-
-    # Pop off the compliance metric, which is the inverse our output
-
     # Pull and pre process .IMA files to .png for easier usage
     matching_regions = ["AC", "PC"]  # only interested in anterior central and posterior central trials
-    output = ima_to_png(raw_image_dir, png_data_dir, dataset, plt_bool=False, matching_strs=matching_regions)
+    output, dataset = ima_to_png(raw_image_dir, png_data_dir, dataset, plt_bool=False, matching_strs=matching_regions)
+    demographics_df = dataset[dataset.columns.drop(["SubID"])]
+    print(demographics_df.dtypes)
     output = natsorted(output)  # properly sorts numbers as 1,2,3 instead of 1, 10, 100, 2
-
     dataset["filepath"] = output
+    print(dataset.describe().transpose()[['mean', 'std']])
 
-    # to visually inspect if filepath matches sub_id and region
-    with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
-        pd.set_option('display.max_colwidth', None)
-        print(dataset)
+    enc = ColumnTransformer([("OHE", OneHotEncoder(sparse=False, handle_unknown="ignore"),
+                              demographics_df.select_dtypes(include="object").columns)], remainder="passthrough")
+    enc.fit(demographics_df)  # fit the encoder to the datasets variables
+    print(type(enc))
 
-    batch_size = 4
-    num_epochs = 1
+    # call function to onehot encode the data
+    ohe_dataset = ohe_df(enc, demographics_df)
+
     train, test = train_test_split(dataset, test_size=0.2, random_state=752)
-
+    demo_train, demo_test = train_test_split(ohe_dataset, test_size=0.2, random_state=752)
     train, val = train_test_split(train, test_size=0.2, random_state=752)
+    demo_train, demo_val = train_test_split(demo_train, test_size=0.2, random_state=752)
+
+    normalizer = tf.keras.layers.Normalization(axis=-1)
+    normalizer.adapt(np.array(demo_train))
+    print(normalizer.mean.numpy())
+    print(demo_train.shape)
 
     train_datagen = ImageDataGenerator(rescale=1. / 255, horizontal_flip=True,
                                        fill_mode="nearest", zoom_range=0.1,
@@ -270,6 +323,9 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
                                        rotation_range=10, shear_range=10)
     test_datagen = ImageDataGenerator(rescale=1. / 255)
 
+    # define train generators
+    batch_size = 4
+    num_epochs = 1
     train_generator = train_datagen.flow_from_dataframe(dataframe=train, directory=None, has_ext=True,
                                                         x_col="filepath", y_col="Compliance", class_mode="other",
                                                         target_size=(IMAGE_SIZE[0], IMAGE_SIZE[1]),
@@ -285,26 +341,26 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
                                                       target_size=(IMAGE_SIZE[0], IMAGE_SIZE[1]),
                                                       batch_size=1, shuffle=False, seed=752)
     # #  View generator results
-    img, label = train_generator.next()
-    fig, axs = plt.subplots(2, round(batch_size/2))
-    print(img.shape)  # (batch size, IMAGESIZE, IMAGESIZE, COLORCHANNELS)
-
-    for i, ax in enumerate(axs.flatten()):
-        ax.imshow(img[i])
-        ax.set_xlabel(f"compliance = {label[i]}")
-    plt.show()
-
-    fig, axs = plt.subplots(2, 2)
-    for i, ax in enumerate(axs.flatten()):
-        img, label = test_generator.next() # only one image
-        ax.imshow(img[0])
-        ax.set_xlabel(f"compliance = {label[0]}")
-    plt.show()
+    # img, label = train_generator.next()
+    # fig, axs = plt.subplots(2, round(batch_size/2))
+    # print(img.shape)  # (batch size, IMAGESIZE, IMAGESIZE, COLORCHANNELS)
+    #
+    # for i, ax in enumerate(axs.flatten()):
+    #     ax.imshow(img[i])
+    #     ax.set_xlabel(f"compliance = {label[i]}")
+    # plt.show()
+    #
+    # fig, axs = plt.subplots(2, 2)
+    # for i, ax in enumerate(axs.flatten()):
+    #     img, label = test_generator.next() # only one image
+    #     ax.imshow(img[0])
+    #     ax.set_xlabel(f"compliance = {label[0]}")
+    # plt.show()
 
     # create a log directory for a tensorboard visualization
     os.makedirs(os.path.join(head_tail[0], "..", "logs", "image_fit"), exist_ok=True)
     log_path = os.path.join(head_tail[0], "..", "logs", "image_fit")
-    model_checkpoint = tf.keras.callbacks.ModelCheckpoint(os.path.join(log_path, "image_CNN_initial_weights.hdf5"),
+    model_checkpoint = tf.keras.callbacks.ModelCheckpoint(os.path.join(log_path, "image_demo_initial_weights.hdf5"),
                                                           monitor='val_loss', verbose=1, save_freq='epoch',
                                                           save_weights_only=True, save_best_only=True,
                                                           mode='min', restore_best_weights=True)
@@ -314,16 +370,18 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
 
     # define hyperparameters through keras tuner
     hp = keras_tuner.HyperParameters()
+    build_model = partial(build_and_compile_model, norm=normalizer)  # ???TypeError: object of type 'NoneType' has no len()
+
 
     # define tuning model for hyperparameter search
     tuner = keras_tuner.tuners.RandomSearch(
-        hypermodel=build_and_compile_model,
+        hypermodel=build_model,
         objective='val_loss',
-        max_trials=5,
+        max_trials=1,
         executions_per_trial=1,
         overwrite=True,
         directory=log_path,
-        project_name="TestingKerasTuner_CNN_only")
+        project_name="TestingKerasTuner_CNN_withDemo")
     tuner.search_space_summary()
 
     # The call to search has the same signature as model.fit()
@@ -430,7 +488,6 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
         print(f"total attrs: {len(explanation.attributions)}")
         cmap_bound = 1  # data is scaled back to -1 to 1 range
 
-
         fig, ax = plt.subplots(nrows=batch_size, ncols=4, figsize=(12, 8))
 
         for row, _ in enumerate(test_images[0:batch_size]):
@@ -453,18 +510,18 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
             attr_neg = np.abs(attr.clip(-cmap_bound, 0))
             im_neg = ax[row, 3].imshow(attr_neg.squeeze(), vmin=-cmap_bound, vmax=cmap_bound, cmap='PiYG')
 
-    ax[0, 1].set_title('Attributions');
-    ax[0, 2].set_title('Positive attributions');
-    ax[0, 3].set_title('Negative attributions');
+        ax[0, 1].set_title('Attributions');
+        ax[0, 2].set_title('Positive attributions');
+        ax[0, 3].set_title('Negative attributions');
 
-    for ax in fig.axes:
-        ax.axis('off')
+        for ax in fig.axes:
+            ax.axis('off')
 
-    fig.colorbar(im, cax=fig.add_axes([0.9, 0.25, 0.03, 0.5]));
-    date = datetime.now().strftime("%Y_%m_%d-%I%p")
-    print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_cnn_image_{date}.png")}')
-    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_cnn_image_{date}.png"), format='png')
-    plt.close()
+        fig.colorbar(im, cax=fig.add_axes([0.9, 0.25, 0.03, 0.5]));
+        date = datetime.now().strftime("%Y_%m_%d-%I%p")
+        print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_cnn_image_{date}.png")}')
+        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_cnn_image_{date}.png"), format='png')
+        plt.close()
 
     # Generate a gradio web interface if requested -- Non-functional
     if interface[0]:
