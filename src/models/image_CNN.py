@@ -6,17 +6,13 @@ import tensorflow as tf
 import keras_tuner
 from keras import layers, regularizers
 from keras.preprocessing.image import ImageDataGenerator
-import seaborn as sns
 from sklearn.model_selection import train_test_split
 from datetime import datetime
-import shap
-import warnings
-import random
+from alibi.explainers import IntegratedGradients
 import pydicom
 from pydicom.pixel_data_handlers import convert_color_space
 import cv2
 from natsort import natsorted
-import functools
 
 # constant variables
 IMAGE_SIZE = [676, 676]
@@ -34,6 +30,7 @@ def ima_to_png(ima_dir: str, png_dir: str, df: pd.DataFrame(), plt_bool=False, m
 
     @return output: a list of files to be analyzed
     """
+
     output = []
     for root, _, files in os.walk(ima_dir):
         if files:
@@ -52,13 +49,20 @@ def ima_to_png(ima_dir: str, png_dir: str, df: pd.DataFrame(), plt_bool=False, m
                         orig_img = convert_color_space(all_dcm.pixel_array, "YBR_FULL_422", "RGB")  # convert to RGB
                         height, width, _ = np.shape(orig_img)
                         # crop out text
-                        img = orig_img[round(height * .07):round(height * .95), round(width * .08):round(width * .89)]
+                        img = orig_img[round(height * .07):round(height * .95),
+                              round(width * .08):round(width * .89)]
                         height, width, _ = np.shape(img)  # cropped dims
-
-                        ecg_mask = cv2.inRange(img, (70, 200, 200), (255, 255, 255)) # finds most of the bottom line
-                        ecg_mask[0:round(height * .9), :] = 0  # include bright data in the top 90% of the image
+                        ecg_mask = cv2.inRange(img, (70, 200, 200), (255, 255, 255))
+                        # omit bright data in the top 90% of the image from mask (so that it is preserved)
+                        ecg_mask[0:round(height * .9), :] = 0
+                        corner_mask = cv2.inRange(img, (140, 60, 0), (255, 255, 255))
+                        # omit bright data in the bottom 97% of the image
+                        corner_mask[round(height * .04)::, :] = 0
+                        # omit bright data in the right 75% of the image
+                        corner_mask[:, round(width * 0.25)::] = 0
+                        my_mask = ecg_mask + corner_mask
                         diff_img = np.ones_like(img)
-                        diff_img = diff_img * np.reshape(ecg_mask, (height, width, 1))
+                        diff_img = diff_img * np.reshape(my_mask, (height, width, 1))
                         final_img = cv2.subtract(img, diff_img)
                         final_img = cv2.resize(final_img, (height, height))
                         cv2.imwrite(os.path.join(png_dir, str(sub_id) + location + ".png"), final_img)
@@ -80,8 +84,14 @@ def ima_to_png(ima_dir: str, png_dir: str, df: pd.DataFrame(), plt_bool=False, m
     return list(set(output))  # duplicates in my list?
 
 
-def plot_loss(head_tail, history):
-    """Visualize error decrease over training process """
+def plot_loss(head_tail, history, finetune):
+    """
+     Visualize error decrease over training process
+     @param head_tail: list of input path variables to determine where to save the image
+     @param history: model training results object
+     @param finetune: change file saving name to prevent overwrite
+     @return: Nothing
+     """
     plt.figure(2)
     plt.plot(history.history['loss'], label='loss')
     plt.plot(history.history['val_loss'], label='validation loss')
@@ -93,11 +103,22 @@ def plot_loss(head_tail, history):
 
     if not os.path.exists(os.path.join(head_tail[0], "..", "Pictures")):
         os.mkdir(os.path.join(head_tail[0], "..", "Pictures"))
-    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"image_loss_history_{date}.png"))
+    if not finetune:
+        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"image_loss_history_{date}.png"))
+    else:
+        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"finetune_image_loss_history_{date}.png"))
 
 
-def plot_test_predictions(head_tail, model, test_df, test_labels):
-    """Function to visualize the quality of predictions on the test data"""
+def plot_test_predictions(head_tail, model, test_df, test_labels, finetune):
+    """
+    Function to visualize the quality of predictions on the test data
+    @param head_tail: the path variables to save the images
+    @param model: the tf deep neural network object
+    @param test_df: the dataframe that the model has not seen, which it will make a prediction on
+    @param test_labels: The correct values for each test data sample, which will be used to test prediction accuracy
+    @param finetune: change file saving name to prevent overwrite
+    @return: Nothing
+    """
     test_predictions = model.predict(test_df).flatten()
     plt.figure()
     plt.scatter(test_predictions, test_labels)
@@ -114,20 +135,27 @@ def plot_test_predictions(head_tail, model, test_df, test_labels):
 
     # Second plot of histogram mape
     plt.figure()
-    error = abs(test_predictions - test_labels)/test_labels * 100
+    error = abs(test_predictions - test_labels) / test_labels * 100
     plt.hist(error, bins=25, edgecolor='black')
     plt.xlabel('Absolute Percent Error')
     plt.ylabel('Count')
-    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"image_error_{date}.png"), format='png')
+    if not finetune:
+        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"image_error_{date}.png"), format='png')
+    else:
+        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"fine_tune_image_error_{date}.png"), format='png')
 
 
-def build_and_compile_model(hp, lr):
-    """Defines the input function to build a deep neural network for tensorflow"""
-
+def build_and_compile_model(hp: keras_tuner.HyperParameters()) -> tf.keras.Sequential():
+    """
+    Defines the input function to build a deep neural network for tensorflow
+    @param hp: the hyper parameter tuner object
+    @param train_xception: boolean whether to fine tune the base xception model or not
+    @return: a tensorflow convolutional neural network model
+    """
     # Define hyperparameters
-    # units = hp.Int("units", min_value=32, max_value=512, step=64)
-    # dropout = hp.Float("dropout", min_value=0.1, max_value=0.6, step=0.1)
-    # lr = 1e-4  # hp.Choice("lr", values=[1e-2, 1e-3, 1e-4])
+    lr = hp.Choice("lr", values=[1e-2, 1e-3])
+    units = hp.Choice("units", values=[32, 64, 128, 256, 512])
+    dropout = hp.Float("dropout", min_value=0.1, max_value=0.6, step=0.1)
 
     # Define model architecture
     model = tf.keras.Sequential()
@@ -135,8 +163,9 @@ def build_and_compile_model(hp, lr):
     pretrained_model.trainable = False
     model.add(pretrained_model)
     model.add(layers.GlobalAveragePooling2D())
-    model.add(layers.Dropout(0.2))
-    #model.add(layers.Dense(64, activation='relu'))  # kernel_regularizer=regularizers.l2(l2)))
+    model.add(layers.Dropout(dropout))
+    model.add(layers.Dense(units))  # , activation='relu'))  # kernel_regularizer=regularizers.l2(l2)))
+    model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
     model.add(layers.Dense(1))
     model.compile(loss='mean_absolute_error',
                   optimizer=tf.keras.optimizers.Adam(lr),
@@ -145,8 +174,37 @@ def build_and_compile_model(hp, lr):
     return model
 
 
-def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_features):#, interface=[False, False], shapley=False):
-    """Build deep neural network from a csv file, and perform plotting functions and shapley/gradio outputs"""
+def compile_final_model(model:tf.keras.Sequential()) -> tf.keras.Sequential():
+    """
+    Defines the input function to build a deep neural network for tensorflow
+    @param model: the original base model without finetuning
+    @return: a tensorflow convolutional neural network model
+    """
+    # Define hyperparameters
+    lr = 1e-5
+    model.load_weights(r"F:\WorkData\MULTIS\logs\image_fit\image_CNN_initial_weights.hdf5")
+
+    model.compile(loss='mean_absolute_error',
+                  optimizer=tf.keras.optimizers.Adam(lr),
+                  metrics=["mae", "mse", "mape"])
+    model.summary()
+    return model
+
+
+def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_features,
+             interface=[False, False], shapley=False):
+    """
+    Main script function for data processing, deep neural net model building, and result generation
+    @param csv: the input csv file containing each subject data, pulled from:
+                https://simtk.org/svn/multis/studies/LayerEffectonStiffness/dat/
+    @param raw_image_dir: path to the raw ultrasound images are located, pulled from multis beta
+    @param png_data_dir: path to the processed png images from the raw ultrasound data
+    @param categorical_features: The grouping features of the data, such as indentation location
+    @param numerical_features: The number based features of the data, such as Age or BMI
+    @param interface: 2 booleans to control if you want a grad.io model prediction interface. First to make the
+                      interface, second bool to control if interface should be pushed to web host
+    @param shapley: 1 Boolean on whether you want feature importance calculations performed
+    """
 
     # Read in the master_csv file
     dataset = pd.read_csv(csv)
@@ -158,8 +216,7 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
     # Filter the csv by the desired features
     dataset = dataset[features]
     dataset = dataset.rename(columns={'Total_Stiff': 'Compliance'})
-    dataset['Compliance'] = 1/dataset['Compliance']
-
+    dataset['Compliance'] = 1 / dataset['Compliance']
 
     i = numerical_features.index("Total_Stiff")
     numerical_features[i] = "Compliance"
@@ -201,7 +258,7 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
     #     print(dataset)
 
     batch_size = 4
-    num_epochs = 100
+    num_epochs = 50
     train, test = train_test_split(dataset, test_size=0.2, random_state=752)
 
     train, val = train_test_split(train, test_size=0.2, random_state=752)
@@ -225,78 +282,68 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
     test_generator = test_datagen.flow_from_dataframe(dataframe=test, directory=None, has_ext=True,
                                                       x_col="filepath", y_col="Compliance", class_mode="other",
                                                       target_size=(IMAGE_SIZE[0], IMAGE_SIZE[1]),
-                                                      batch_size=batch_size, shuffle=False, seed=752)
-    # for _ in range(1):
-    #     fig, axs = plt.subplots(1, 2)
-    #     img, label = train_generator.next()
-    #     print(img.shape)  # (batch size, IMAGESIZE, IMAGESIZE, COLORCHANNELS)
-    #     axs[0].imshow(img[0])
-    #     axs[1].imshow(img[1])
-    #     axs[0].set_xlabel(f"compliance = {label[0]}")
-    #     axs[1].set_xlabel(f"compliance = {label[1]}")
-    #     plt.show()
-    #
-    # for _ in range(1):
-    #     fig, axs = plt.subplots(1, 2)
-    #     img, label = test_generator.next()
-    #     print(img.shape)  # (batch size, IMAGESIZE, IMAGESIZE, COLORCHANNELS)
-    #     axs[0].imshow(img[0])
-    #     axs[1].imshow(img[1])
-    #     axs[0].set_xlabel(f"compliance = {label[0]}")
-    #     axs[1].set_xlabel(f"compliance = {label[1]}")
-    #     plt.show()
+                                                      batch_size=1, shuffle=False, seed=752)
+    # #  View generator results
+    img, label = train_generator.next()
+    fig, axs = plt.subplots(2, round(batch_size/2))
+    print(img.shape)  # (batch size, IMAGESIZE, IMAGESIZE, COLORCHANNELS)
 
+    for i, ax in enumerate(axs.flatten()):
+        ax.imshow(img[i])
+        ax.set_xlabel(f"compliance = {label[i]}")
+    plt.show()
+
+    fig, axs = plt.subplots(2, 2)
+    for i, ax in enumerate(axs.flatten()):
+        img, label = test_generator.next() # only one image
+        ax.imshow(img[0])
+        ax.set_xlabel(f"compliance = {label[0]}")
+    plt.show()
 
     # create a log directory for a tensorboard visualization
     os.makedirs(os.path.join(head_tail[0], "..", "logs", "image_fit"), exist_ok=True)
     log_path = os.path.join(head_tail[0], "..", "logs", "image_fit")
-    lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-        initial_learning_rate=1e-3,
-        decay_steps=(train_generator.samples/batch_size)*5,
-        decay_rate=0.9,
-        staircase=True)
-    model_checkpoint = tf.keras.callbacks.ModelCheckpoint(log_path, monitor='val_loss', verbose=1, save_freq='epoch',
-                                                          save_weights_only=True, save_best_only=True, mode='min',
-                                                          restore_best_weights=True)
+    model_checkpoint = tf.keras.callbacks.ModelCheckpoint(os.path.join(log_path, "image_CNN_initial_weights.hdf5"),
+                                                          monitor='val_loss', verbose=1, save_freq='epoch',
+                                                          save_weights_only=True, save_best_only=True,
+                                                          mode='min', restore_best_weights=True)
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_path, histogram_freq=1)
     reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=2)
     early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
-    model = build_and_compile_model(hp=None, lr=1e-3)
 
     # define hyperparameters through keras tuner
-    #hp = keras_tuner.HyperParameters()
+    hp = keras_tuner.HyperParameters()
 
     # define tuning model for hyperparameter search
-    # tuner = keras_tuner.tuners.RandomSearch(
-    #     hypermodel=build_and_compile_model(hp),
-    #     objective='val_loss',
-    #     max_trials=10,
-    #     executions_per_trial=2,
-    #     overwrite=True,
-    #     directory=log_path,
-    #     project_name="TestingKerasTuner")
-    # tuner.search_space_summary()
+    tuner = keras_tuner.tuners.RandomSearch(
+        hypermodel=build_and_compile_model,
+        objective='val_loss',
+        max_trials=5,
+        executions_per_trial=1,
+        overwrite=True,
+        directory=log_path,
+        project_name="TestingKerasTuner_CNN_only")
+    tuner.search_space_summary()
 
     # The call to search has the same signature as model.fit()
-    # tuner.search(train_data,
-    #              train_labels,
-    #              validation_split=0.2,
-    #              verbose=2, epochs=1000,
-    #              shuffle=True, batch_size=batch_size,
-    #              callbacks=[early_stop, model_checkpoint, tensorboard_callback, reduce_lr]
-    # )
-    # # retrieve best result and visualize top values
-    # tuner.results_summary()
-    # best_hp = tuner.get_best_hyperparameters()[0]  # get the best hp and refit model for plotting
-    # model = tuner.hypermodel.build(best_hp)
-
+    tuner.search(train_generator, verbose=2, steps_per_epoch=train_generator.samples / batch_size,
+                 validation_data=val_generator, validation_steps=val_generator.samples / batch_size,
+                 epochs=num_epochs, shuffle=True,
+                 callbacks=[model_checkpoint, reduce_lr, early_stop, tensorboard_callback]
+                )
+    # retrieve best result and visualize top values
+    tuner.results_summary()
+    best_hp = tuner.get_best_hyperparameters()[0]  # get the best hp and refit model for plotting
+    model = tuner.hypermodel.build(best_hp)
+    print(best_hp)
     history = model.fit(
         train_generator, verbose=2, steps_per_epoch=train_generator.samples / batch_size,
         validation_data=val_generator, validation_steps=val_generator.samples / batch_size,
         epochs=num_epochs, shuffle=True, callbacks=[model_checkpoint, reduce_lr, early_stop, tensorboard_callback]
     )
-    # visualize model loss
-    plot_loss(head_tail, history)
+
+    # plot model training progress
+    plot_loss(head_tail, history, finetune=False)
 
     # print out metrics on how the model performed on the test data
     score = model.evaluate(test_generator, verbose=2)
@@ -306,106 +353,182 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
     print(f"model mean average percent error is {score[3]}")
 
     # Plot predictions vs true values to visually assess accuracy and histogram of APE distribution
-    plot_test_predictions(head_tail, model, test_generator, test["Compliance"])
+    plot_test_predictions(head_tail, model, test_generator, test["Compliance"], finetune=False)
+
+    # workaround for: https://github.com/keras-team/keras/issues/9562#issuecomment-633444727
+    for layer in model.layers:
+        layer.trainable = True
+    model.save_weights(r"F:\WorkData\MULTIS\logs\image_fit\image_CNN_initial_weights.hdf5")
+
+    # fine tune the xception layers
+    finetune_model = compile_final_model(model)
+    finetune_model_checkpoint = tf.keras.callbacks.ModelCheckpoint(os.path.join(log_path, "image_CNN_finetuned_weights.hdf5"),
+                                                          monitor='val_loss', verbose=1, save_freq='epoch',
+                                                          save_weights_only=True, save_best_only=True,
+                                                          mode='min', restore_best_weights=True)
+
+    finetune_history = finetune_model.fit(
+        train_generator, verbose=2, steps_per_epoch=train_generator.samples / batch_size,
+        validation_data=val_generator, validation_steps=val_generator.samples / batch_size,
+        epochs=num_epochs, shuffle=True,
+        callbacks=[finetune_model_checkpoint, reduce_lr, early_stop, tensorboard_callback]
+                                          )
+    # visualize model loss
+    plot_loss(head_tail, finetune_history, finetune=True)
+
+    # print out metrics on how the model performed on the test data
+    score = finetune_model.evaluate(test_generator, verbose=2)
+    print(f"finetune_model loss is: {score[0]}")
+    print(f"finetune_model mean absolute error is: {score[1]}")
+    print(f"finetune_model mean squared error is: {score[2]}")
+    print(f"finetune_model mean average percent error is {score[3]}")
+
+    # Plot predictions vs true values to visually assess accuracy and histogram of APE distribution
+    plot_test_predictions(head_tail, model, test_generator, test["Compliance"], finetune=True)
+    model.save_weights(r"F:\WorkData\MULTIS\logs\image_fit\image_CNN_finetuned_weights.hdf5")
 
     # # Plot different shapley figures for feature importance
-    # if shapley:
-    #     print(test_data.iloc[0])
-    #     background = train_data.head(100)  # data is already shuffled, no need to randomly choose?
-    #
-    #     # hide the sklearn future deprecation warning as it clogs the terminal
-    #     with warnings.catch_warnings():
-    #         warnings.filterwarnings("ignore")
-    #         explainer = shap.KernelExplainer(model, background)
-    #         shap_values = explainer.shap_values(test_data)
-    #
-    #     # visualize first test data point: https://github.com/slundberg/shap/issues/1420. waterfall legacy seems to plot
-    #     fig = plt.figure()
-    #     fig = shap.plots._waterfall.waterfall_legacy(explainer.expected_value[0], shap_values[0][0], test_data.iloc[0],
-    #                                            max_display=20, show=False)
-    #     date = datetime.now().strftime("%Y_%m_%d-%I%p")
-    #     print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_waterfall_{date}.png")}')
-    #     plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_waterfall_{date}.png"), format='png')
-    #     plt.close()
-    #
-    #
-    #     # Generate a force plot for the same entry
-    #     fig2 = plt.figure()
-    #     fig2 = shap.force_plot(explainer.expected_value[0], shap_values[0][0], test_data.iloc[0],
-    #                            matplotlib=True, show=False)
-    #     print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_force_{date}.png")}')
-    #     plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_force_{date}.png"), format='png')
-    #     plt.close()
-    #
-    #     # Generate a summary plot for all entries
-    #     fig3 = plt.figure()
-    #     fig3 = shap.summary_plot(shap_values, train_data, show=False)
-    #     print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_summary_{date}.png")}')
-    #     plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_summary_{date}.png"), format='png')
-    #     plt.close()
-    #
-    #     # Generate a force plot for the same entry
-    #     fig4 = plt.figure()
-    #     fig4 = shap.summary_plot(shap_values[0], features=test_data.columns, show=False)
-    #     print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_beeswarm_{date}.png")}')
-    #     plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_beeswarm_{date}.png"), format='png')
-    #     plt.close()
-    #
-    # # Generate a gradio web interface if requested
-    # if interface[0]:
-    #     import gradio as gr
-    #
-    #     def make_prediction(*features):
-    #         """Function to make a prediction on a new user value from a gradio user interface"""
-    #         Compliance = 1000  # Dummy val just for the one hot encoder. Probably a more graceful solution available?
-    #         features = list(features)
-    #         features.append(Compliance)
-    #         cols = categorical_features + numerical_features
-    #         pred_df = pd.DataFrame(data=[features], columns=cols)
-    #
-    #         # Convert user input to one hot encoded values so predictions can be made
-    #         ohe_pred = ohe_df(enc, pred_df, categorical_features)
-    #         ohe_pred.drop(["Compliance"], axis=1, inplace=True)
-    #
-    #         # Sanity check that variables look correct
-    #         with pd.option_context('display.max_rows', None, 'display.max_columns', None):
-    #             print(ohe_pred)
-    #         pred = model.predict([ohe_pred])
-    #
-    #         print(f"Predicted tissue compliance of {pred[0][0]} mm/MPa")
-    #         return f"Predicted tissue compliance of {pred[0][0]} mm/MPa"
-    #
-    #     input_list = []
-    #     #  Create dropdown menus for categorical inputs
-    #     for variable in categorical_features:
-    #         if variable != "SubID":
-    #             if dataset.loc[:, variable].dtype == "object":
-    #                 vocabulary = list(dataset.loc[:, variable].unique())
-    #                 input_list.append(gr.inputs.Dropdown(label=f"Choose a value for {variable}", choices=vocabulary))
-    #         else:
-    #             input_list.append(gr.inputs.Textbox(label=f"Choose a value for {variable} (Enter 999 or higher for new subjects)"))
-    #
-    #     #  Create number menus for numerical inputs
-    #     for variable in numerical_features:
-    #         if variable != "Compliance":
-    #             min_val = min(train_data[variable])
-    #             max_val = max(train_data[variable])
-    #             input_list.append(gr.inputs.Number(label=f"Choose a value for {variable}, with acceptable range from {min_val} to {max_val}"))
-    #         else:
-    #             pass  # dummy value in make_prediction just to satisfy one hot encoder. Better solution possible?
-    #
-    #     #  Launch gradio interface on the web
-    #     app = gr.Interface(fn=make_prediction, inputs=input_list, outputs="text")
-    #     app.launch(share=interface[1]) # share=True to display on the gradio webpage. Can share on huggingfaces
+    if shapley:
+        n_steps = 50
+        method = "gausslegendre"
+        ig = IntegratedGradients(model,
+                                 n_steps=n_steps,
+                                 method=method,
+                                 internal_batch_size=1
+                                 )
+
+        # Calculate attributions for the first 10 images in the test set
+        images = []
+        predictions = []
+        # train on val images due to shearing of training images and lack of memory to hold more than 10 images?
+        print(f"looping through a range of {round(test_generator.samples / batch_size)}")
+        for _ in range(batch_size):
+            batch = next(iter(test_generator))
+            image, _ = batch
+            images.append(image)
+            pred = finetune_model.predict(np.reshape(np.squeeze(np.array(image)), (1, 676, 676, 3)))
+            print(pred)
+            predictions.append(pred)
+            print(predictions)
+
+        np_images = np.squeeze(np.array(images))
+        np_preds = np.squeeze(np.array(predictions))
+
+        print(f"Total images {np.shape(np_images)} images for alibi")
+        print(f"Total predictions {np.shape(np_preds)} for alibi")
+
+        test_images = np_images[0:batch_size]
+        predictions = np_preds[0:batch_size]
+        explanation = ig.explain(test_images,
+                                 baselines=None,
+                                 target=[0, 0, 0, 0]) # all same class so just 0 for every sample?
+
+        print(explanation.meta)
+        print(explanation.data.keys())
+        attrs = explanation.attributions[0]
+        print(f"total attrs: {len(explanation.attributions)}")
+        cmap_bound = 1  # data is scaled back to -1 to 1 range
+
+        fig, ax = plt.subplots(nrows=batch_size, ncols=4, figsize=(12, 8))
+
+        for row, _ in enumerate(test_images[0:batch_size]):
+            ax[row, 0].imshow(test_images[row].squeeze(), cmap='gray')
+            ax[row, 0].set_title(f'Prediction: {predictions[row]}')
+
+            # attributions
+            attr = attrs[row]
+            attr = attr.astype(np.float32) / 255.0
+            attr = 2 * (attr - np.amin(attr)) / (np.amax(attr) - np.amin(attr)) - 1
+
+            print(f"min and max of attr for {np.shape(attr)} = {np.amin(attr)}, {np.amax(attr)}")
+            im = ax[row, 1].imshow(attr.squeeze(), vmin=-cmap_bound, vmax=cmap_bound, cmap='PiYG')
+
+            # positive attributions
+            attr_pos = attr.clip(0, cmap_bound)
+            im_pos = ax[row, 2].imshow(attr_pos.squeeze(), vmin=-cmap_bound, vmax=cmap_bound, cmap='PiYG')
+
+            # negative attributions
+            attr_neg = np.abs(attr.clip(-cmap_bound, 0))
+            im_neg = ax[row, 3].imshow(attr_neg.squeeze(), vmin=-cmap_bound, vmax=cmap_bound, cmap='PiYG')
+
+        ax[0, 1].set_title('Attributions');
+        ax[0, 2].set_title('Positive attributions');
+        ax[0, 3].set_title('Negative attributions');
+
+        for ax in fig.axes:
+            ax.axis('off')
+
+        fig.colorbar(im, cax=fig.add_axes([0.9, 0.25, 0.03, 0.5]));
+        date = datetime.now().strftime("%Y_%m_%d-%I%p")
+        print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_cnn_image_{date}.png")}')
+        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_cnn_image_{date}.png"), format='png')
+        plt.close()
+
+    # Generate a gradio web interface if requested -- Non-functional
+    if interface[0]:
+        import gradio as gr
+
+        def make_prediction(*features):
+            """Function to make a prediction on a new user value from a gradio user interface"""
+            all_dcm = pydicom.read_file(os.path.join(features))
+            orig_img = convert_color_space(all_dcm.pixel_array, "YBR_FULL_422", "RGB")  # convert to RGB
+            height, width, _ = np.shape(orig_img)
+            # crop out text
+            img = orig_img[round(height * .07):round(height * .95),
+                  round(width * .08):round(width * .89)]
+            height, width, _ = np.shape(img)  # cropped dims
+            ecg_mask = cv2.inRange(img, (70, 200, 200), (255, 255, 255))
+            # omit bright data in the top 90% of the image from mask (so that it is preserved)
+            ecg_mask[0:round(height * .9), :] = 0
+            corner_mask = cv2.inRange(img, (140, 60, 0), (255, 255, 255))
+            # omit bright data in the bottom 97% of the image
+            corner_mask[round(height * .04)::, :] = 0
+            # omit bright data in the right 75% of the image
+            corner_mask[:, round(width * 0.25)::] = 0
+            my_mask = ecg_mask + corner_mask
+            diff_img = np.ones_like(img)
+            diff_img = diff_img * np.reshape(my_mask, (height, width, 1))
+            final_img = cv2.subtract(img, diff_img)
+            final_img = cv2.resize(final_img, (height, height))
+
+            print(f"Predicted tissue compliance of {pred[0][0]} mm/MPa")
+            return f"Predicted tissue compliance of {pred[0][0]} mm/MPa"
+
+        input_list = []
+        #  Create dropdown menus for categorical inputs
+        for variable in categorical_features:
+            if variable != "SubID":
+                if dataset.loc[:, variable].dtype == "object":
+                    vocabulary = list(dataset.loc[:, variable].unique())
+                    input_list.append(gr.inputs.Dropdown(label=f"Choose a value for {variable}", choices=vocabulary))
+            else:
+                input_list.append(
+                    gr.inputs.Textbox(label=f"Choose a value for {variable} (Enter 999 or higher for new subjects)"))
+
+        #  Create number menus for numerical inputs
+        for variable in numerical_features:
+            if variable != "Compliance":
+                min_val = min(train_data[variable])
+                max_val = max(train_data[variable])
+                input_list.append(gr.inputs.Number(
+                    label=f"Choose a value for {variable}, with acceptable range from {min_val} to {max_val}"))
+            else:
+                pass  # dummy value in make_prediction just to satisfy one hot encoder. Better solution possible?
+
+        #  Launch gradio interface on the web
+        app = gr.Interface(fn=make_prediction, inputs=input_list, outputs="text")
+        app.launch(share=interface[1])  # share=True to display on the gradio webpage. Can share on huggingfaces
 
 
 if __name__ == "__main__":
     csv_path = r"F:\WorkData\MULTIS\master_csv\001_MasterList_indentation_orig.csv"
     raw_image_dir = r"F:\WorkData\MULTIS\Ultrasound_minImages"
-    png_dir = r"F:\WorkData\MULTIS\master_csv\ultrasound_tiff" # as defined by keras image_flow from dir
-    categorical_features = ["SubID", "Location"]
+    png_dir = r"F:\WorkData\MULTIS\master_csv\ultrasound_tiff"  # as defined by keras image_flow from dir
+    categorical_features = ["SubID", "Location"] # need subid, location and total stiff for script to work
     numeric_features = ["Total_Stiff"]
+    plot_shapley = True
     #  lists are sorted alphabetically so order does not matter
-
-    make_interface = [True, False]  # 1st bool - make gradio interface | second bool - share to the web
-    tf_image(csv_path, raw_image_dir, png_dir, categorical_features, numeric_features) #, interface=make_interface), shapley=plot_shapley)
+    # 1st bool - make gradio interface | second bool - share to the web
+    make_interface = [False, False]  # not currently working
+    tf_image(csv_path, raw_image_dir, png_dir, categorical_features, numeric_features,
+             interface=make_interface, shapley=plot_shapley)
