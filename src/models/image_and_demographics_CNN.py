@@ -3,22 +3,20 @@ import numpy as np
 import pandas as pd
 import os
 import tensorflow as tf
-import keras_tuner
-from keras import layers
-from keras.models import Model
-from keras.layers import GlobalAveragePooling2D, PReLU
-from keras.layers.core import *
-from keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras import layers
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import GlobalAveragePooling2D, PReLU, Input, Dropout, Dense, Flatten, Normalization
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from datetime import datetime
+import alibi
 from alibi.explainers import IntegratedGradients
 import pydicom
 from pydicom.pixel_data_handlers import convert_color_space
 import cv2
 from natsort import natsorted
-from functools import partial
 
 # constant variables
 IMAGE_SIZE = [676, 676]
@@ -45,7 +43,8 @@ def ohe_df(enc: ColumnTransformer, df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def ima_to_png(ima_dir: str, png_dir: str, df: pd.DataFrame(), plt_bool=False, matching_strs=[]) -> (list, pd.DataFrame()):
+def ima_to_png(ima_dir: str, png_dir: str, df: pd.DataFrame(), plt_bool=False, matching_strs=[]) -> (
+list, pd.DataFrame()):
     """function to convert ima files to png for compatibility with tf. tf only supports 4 image types officially
     @param ima_dir: where the raw ima files are located. Pull from multis gamma
     @param png_dir: where to save the converted files
@@ -119,11 +118,12 @@ def ima_to_png(ima_dir: str, png_dir: str, df: pd.DataFrame(), plt_bool=False, m
     return (list(set(output)), df)  # duplicates in my list?
 
 
-def plot_loss(head_tail, history):
+def plot_loss(head_tail, history, finetune):
     """
      Visualize error decrease over training process
      @param head_tail: list of input path variables to determine where to save the image
      @param history: model training results object
+     @param finetune: change file saving name to prevent overwrite
      @return: Nothing
      """
     plt.figure(2)
@@ -137,21 +137,26 @@ def plot_loss(head_tail, history):
 
     if not os.path.exists(os.path.join(head_tail[0], "..", "Pictures")):
         os.mkdir(os.path.join(head_tail[0], "..", "Pictures"))
+    if not finetune:
+        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"image_demo_loss_history_{date}.png"))
+    else:
+        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"finetune_image_demo_loss_history_{date}.png"))
 
-    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"finetune_image_loss_history_{date}.png"))
 
-
-def plot_test_predictions(head_tail, model, test_df, test_labels):
+def plot_test_predictions(head_tail, model, test_df, test_labels, finetune):
     """
     Function to visualize the quality of predictions on the test data
     @param head_tail: the path variables to save the images
     @param model: the tf deep neural network object
     @param test_df: the dataframe that the model has not seen, which it will make a prediction on
     @param test_labels: The correct values for each test data sample, which will be used to test prediction accuracy
+    @param finetune: change file saving name to prevent overwrite
     @return: Nothing
     """
-    test_predictions = model.predict(test_df).flatten()
+    test_predictions = model.predict(test_df, steps=(np.shape(test_labels)[0])).flatten()
     plt.figure()
+    print(np.shape(test_predictions))
+    print(np.shape(test_labels))
     plt.scatter(test_predictions, test_labels)
 
     plt.xlabel('Predicted Compliance (mm/MPa)')
@@ -162,7 +167,7 @@ def plot_test_predictions(head_tail, model, test_df, test_labels):
     plt.plot(lims, lims, linestyle='dashed', color='black', linewidth=2)
     date = datetime.now().strftime("%Y_%m_%d-%I%p")
 
-    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"compliance_CNN_image_{date}.png"), format='png')
+    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"compliance_CNN_demo_image_{date}.png"), format='png')
 
     # Second plot of histogram mape
     plt.figure()
@@ -170,23 +175,25 @@ def plot_test_predictions(head_tail, model, test_df, test_labels):
     plt.hist(error, bins=25, edgecolor='black')
     plt.xlabel('Absolute Percent Error')
     plt.ylabel('Count')
-    plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"fine_tune_image_error_{date}.png"), format='png')
+    if not finetune:
+        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"image_demo_error_{date}.png"), format='png')
+    else:
+        plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"fine_tune_image_demo_error_{date}.png"),
+                    format='png')
 
 
-def build_and_compile_model(hp: keras_tuner.HyperParameters(), norm: tf.keras.layers.Normalization()) -> tf.keras.Sequential():
+def build_and_compile_model(norm) -> tf.keras.Sequential():
     """
     Defines the input function to build a deep neural network for tensorflow
-    @param hp: the hyper parameter tuner object
-    @param train_xception: boolean whether to fine tune the base xception model or not
     @return: a tensorflow convolutional neural network model
     """
     # Define hyperparameters
-    lr = hp.Choice("lr", values=[1e-2, 1e-3])
-    units = hp.Choice("units", values=[32, 64, 128, 256, 512])
-    dropout = hp.Float("dropout", min_value=0.1, max_value=0.6, step=0.1)
+    lr = 1e-2  # hp.Choice("lr", values=[1e-2])
+    units = 32  # hp.Choice("units", values=[128])
+    dropout = 0.2
 
     # Define model architecture
-
+    # model = tf.keras.Sequential()
     # model.add(layers.GlobalAveragePooling2D())
     # model.add(layers.Dropout(dropout))
     # model.add(layers.Dense(units))
@@ -199,35 +206,40 @@ def build_and_compile_model(hp: keras_tuner.HyperParameters(), norm: tf.keras.la
     # combined_model.add(layers.Dense(units))
     # combined_model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
     # combined_model.add(layers.Dense(1))
-    model = tf.keras.Sequential()
-    pretrained_model = tf.keras.applications.Xception(input_shape=[*IMAGE_SIZE, COLOR_CHANNELS], include_top=False)
-    pretrained_model.trainable = False
-    gap = GlobalAveragePooling2D()(pretrained_model)
-    gap = Dropout(dropout)(gap)
-    gap = Dense(units)(gap)
-    img_model = PReLU(alpha_initializer=tf.initializers.constant(0.1))(gap)
 
+    pretrained_model = tf.keras.applications.Xception(input_shape=[*IMAGE_SIZE, COLOR_CHANNELS],
+                                                      input_tensor=Input(shape=(*IMAGE_SIZE, COLOR_CHANNELS)),
+                                                      include_top=False)
+    pretrained_model.trainable = False
+    gap = GlobalAveragePooling2D()(pretrained_model.output)
+    gap = Dense(units)(gap)
+    gap = PReLU(alpha_initializer=tf.initializers.constant(0.1))(gap)
+    img_model = Dropout(dropout)(gap)
+
+    # add in the demographic information
     first_part_output = Flatten()(img_model)
-    combined_model = layers.concatenate([first_part_output.output, norm])
-    cm = Dropout(dropout)(combined_model)
-    cm = Dense(units*2)(cm)
+    norm_input = Input(shape=(21,), name="norm_input")
+    norm_input = Normalization(axis=-1, mean=norm.mean.numpy(), variance=norm.variance.numpy())(norm_input)
+    combined_model = layers.concatenate([first_part_output, norm_input])
+    cm = Dense(units)(combined_model)
     cm = PReLU(alpha_initializer=tf.initializers.constant(0.1))(cm)
     cm = Dropout(dropout)(cm)
     cm = Dense(units)(cm)
     cm = PReLU(alpha_initializer=tf.initializers.constant(0.1))(cm)
     cm = Dropout(dropout)(cm)
     predictions = Dense(1)(cm)
-    model = Model(inputs=[pretrained_model, norm], outputs=predictions)
+    print(type(pretrained_model.input), type(pretrained_model.output))
+    model = Model(inputs=[pretrained_model.input, norm_input], outputs=predictions)
 
     model.compile(loss='mean_absolute_error',
                   optimizer=tf.keras.optimizers.Adam(lr),
                   metrics=["mae", "mse", "mape"])
-    combined_model.summary()
+    model.summary()
     tf.keras.utils.plot_model(model, to_file="F:\WorkData\MULTIS\Pictures\model_architecture.png")
     return model
 
 
-def compile_final_model(model:tf.keras.Sequential()) -> tf.keras.Sequential():
+def compile_final_model(model: tf.keras.Sequential()) -> tf.keras.Sequential():
     """
     Defines the input function to build a deep neural network for tensorflow
     @param model: the original base model without finetuning
@@ -244,7 +256,8 @@ def compile_final_model(model:tf.keras.Sequential()) -> tf.keras.Sequential():
     return model
 
 
-def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_features, interface=[False, False], shapley=False):
+def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_features, interface=(False, False),
+             shapley=False):
     """
     Main script function for data processing, deep neural net model building, and result generation
     @param csv: the input csv file containing each subject data, pulled from:
@@ -311,21 +324,23 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
     demo_train, demo_test = train_test_split(ohe_dataset, test_size=0.2, random_state=752)
     train, val = train_test_split(train, test_size=0.2, random_state=752)
     demo_train, demo_val = train_test_split(demo_train, test_size=0.2, random_state=752)
-
+    demo_comp_train = demo_train.pop("Compliance")
+    demo_comp_val = demo_val.pop("Compliance")
+    demo_comp_test = demo_test.pop("Compliance")
     normalizer = tf.keras.layers.Normalization(axis=-1)
     normalizer.adapt(np.array(demo_train))
     print(normalizer.mean.numpy())
-    print(demo_train.shape)
+    print(demo_train.columns)
 
-    train_datagen = ImageDataGenerator(rescale=1. / 255, horizontal_flip=True,
-                                       fill_mode="nearest", zoom_range=0.1,
+    train_datagen = ImageDataGenerator(preprocessing_function=tf.keras.applications.xception.preprocess_input,
+                                       horizontal_flip=True, fill_mode="nearest", zoom_range=0.1,
                                        width_shift_range=0.1, height_shift_range=0.1,
                                        rotation_range=10, shear_range=10)
-    test_datagen = ImageDataGenerator(rescale=1. / 255)
+    test_datagen = ImageDataGenerator(preprocessing_function=tf.keras.applications.xception.preprocess_input)
 
     # define train generators
     batch_size = 4
-    num_epochs = 1
+    num_epochs = 100
     train_generator = train_datagen.flow_from_dataframe(dataframe=train, directory=None, has_ext=True,
                                                         x_col="filepath", y_col="Compliance", class_mode="other",
                                                         target_size=(IMAGE_SIZE[0], IMAGE_SIZE[1]),
@@ -360,90 +375,126 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
     # create a log directory for a tensorboard visualization
     os.makedirs(os.path.join(head_tail[0], "..", "logs", "image_fit"), exist_ok=True)
     log_path = os.path.join(head_tail[0], "..", "logs", "image_fit")
+    # change model checkpoint file name in compile model as well
     model_checkpoint = tf.keras.callbacks.ModelCheckpoint(os.path.join(log_path, "image_demo_initial_weights.hdf5"),
-                                                          monitor='val_loss', verbose=1, save_freq='epoch',
+                                                          monitor='val_loss', verbose=2, save_freq='epoch',
                                                           save_weights_only=True, save_best_only=True,
                                                           mode='min', restore_best_weights=True)
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_path, histogram_freq=1)
     reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=2)
     early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
 
-    # define hyperparameters through keras tuner
-    hp = keras_tuner.HyperParameters()
-    build_model = partial(build_and_compile_model, norm=normalizer)  # ???TypeError: object of type 'NoneType' has no len()
+    # No HP tuning as TF does not support tuning on multi-input models (manual search could be used)
+    # Instead use image_cnn.py best params
+    model = build_and_compile_model(normalizer)
 
 
-    # define tuning model for hyperparameter search
-    tuner = keras_tuner.tuners.RandomSearch(
-        hypermodel=build_model,
-        objective='val_loss',
-        max_trials=1,
-        executions_per_trial=1,
-        overwrite=True,
-        directory=log_path,
-        project_name="TestingKerasTuner_CNN_withDemo")
-    tuner.search_space_summary()
 
-    # The call to search has the same signature as model.fit()
-    tuner.search(train_generator, verbose=2, steps_per_epoch=train_generator.samples / batch_size,
-                 validation_data=val_generator, validation_steps=val_generator.samples / batch_size,
-                 epochs=num_epochs, shuffle=True,
-                 callbacks=[model_checkpoint, reduce_lr, early_stop, tensorboard_callback]
-                )
-    # retrieve best result and visualize top values
-    tuner.results_summary()
-    best_hp = tuner.get_best_hyperparameters()[0]  # get the best hp and refit model for plotting
-    model = tuner.hypermodel.build(best_hp)
-    print(best_hp)
-    history = model.fit(
-        train_generator, verbose=2, steps_per_epoch=train_generator.samples / batch_size,
-        validation_data=val_generator, validation_steps=val_generator.samples / batch_size,
-        epochs=num_epochs, shuffle=True, callbacks=[model_checkpoint, reduce_lr, early_stop, tensorboard_callback]
-    )
+    def train_image_dataset_generator():
+        a_tuple = train_generator.next()
+        b_tuple = []
+        for j in range(len(a_tuple[1])):
+            demo_np_array = np.stack(demo_train.loc[demo_comp_train == a_tuple[1][j]].values).squeeze()
+            b_tuple.append(demo_np_array)
+        b_tuple = tuple(b_tuple)
+        yield (a_tuple[0], b_tuple), (a_tuple[1])
 
-    # plot model training progress
+    tf_ds_train = tf.data.Dataset.from_generator(train_image_dataset_generator,
+                                        output_signature=(
+                                             (tf.TensorSpec(shape=(None, 676, 676, 3), dtype=tf.float64),
+                                              tf.TensorSpec(shape=(None, 21,), dtype=tf.float64)),
+                                             (tf.TensorSpec(shape=(None,), dtype=tf.float64))
+                                             )).repeat()
+    it = iter(tf_ds_train)
+    print(it)
+    batch = next(it)
+    print(np.shape(batch))
+
+    def val_image_dataset_generator():
+        a_tuple = val_generator.next()
+        b_tuple = []
+        for j in range(len(a_tuple[1])):
+            demo_np_array = np.stack(demo_val.loc[demo_comp_val == a_tuple[1][j]].values).squeeze()
+            b_tuple.append(demo_np_array)
+        b_tuple = tuple(b_tuple)
+        yield (a_tuple[0], b_tuple), (a_tuple[1])
+
+    tf_ds_val = tf.data.Dataset.from_generator(val_image_dataset_generator,
+                                        output_signature=(
+                                             (tf.TensorSpec(shape=(None, 676, 676, 3), dtype=tf.float64),
+                                              tf.TensorSpec(shape=(None, 21,), dtype=tf.float64)),
+                                             (tf.TensorSpec(shape=(None,), dtype=tf.float64))
+                                             )).repeat()
+
+    history = model.fit(x=tf_ds_train, verbose=2,
+                        steps_per_epoch=train_generator.samples / batch_size,
+                        validation_data=tf_ds_val,
+                        validation_steps=val_generator.samples / batch_size,
+                        epochs=num_epochs, shuffle=False,
+                        callbacks=[model_checkpoint, reduce_lr, early_stop, tensorboard_callback]
+                        )
+
     plot_loss(head_tail, history, finetune=False)
+    # plot model training progress
+
+    def test_image_dataset_generator():
+        a_tuple = test_generator.next()
+        b_tuple = []
+        for j in range(len(a_tuple[1])):
+            demo_np_array = demo_test.loc[demo_comp_test == a_tuple[1][j]].values
+            b_tuple.append(demo_np_array)
+        b_tuple = tuple(b_tuple)
+        yield (a_tuple[0], b_tuple[0]), (a_tuple[1])
+
+    tf_ds_test = tf.data.Dataset.from_generator(test_image_dataset_generator,
+                                        output_signature=(
+                                             (tf.TensorSpec(shape=(None, 676, 676, 3), dtype=tf.float64),
+                                              tf.TensorSpec(shape=(None, 21,), dtype=tf.float64)),
+                                             (tf.TensorSpec(shape=(None,), dtype=tf.float64))
+                                             )).repeat()
+
+
 
     # print out metrics on how the model performed on the test data
-    score = model.evaluate(test_generator, verbose=2)
+    score = model.evaluate(tf_ds_test, verbose=2, steps=np.shape(test["Compliance"])[0])
     print(f"model loss is: {score[0]}")
     print(f"model mean absolute error is: {score[1]}")
     print(f"model mean squared error is: {score[2]}")
     print(f"model mean average percent error is {score[3]}")
 
     # Plot predictions vs true values to visually assess accuracy and histogram of APE distribution
-    plot_test_predictions(head_tail, model, test_generator, test["Compliance"], finetune=False)
+    plot_test_predictions(head_tail, model, tf_ds_test, test["Compliance"], finetune=False)
 
     # workaround for: https://github.com/keras-team/keras/issues/9562#issuecomment-633444727
     for layer in model.layers:
         layer.trainable = True
-    model.save_weights(r"F:\WorkData\MULTIS\logs\image_fit\image_CNN_initial_weights.hdf5")
+    model.save_weights(r"F:\WorkData\MULTIS\logs\image_fit\image_demo_initial_weights.hdf5")
 
     # fine tune the xception layers
     finetune_model = compile_final_model(model)
-    finetune_model_checkpoint = tf.keras.callbacks.ModelCheckpoint(os.path.join(log_path, "image_CNN_finetuned_weights.hdf5"),
-                                                          monitor='val_loss', verbose=1, save_freq='epoch',
-                                                          save_weights_only=True, save_best_only=True,
-                                                          mode='min', restore_best_weights=True)
+    finetune_model_checkpoint = tf.keras.callbacks.ModelCheckpoint(
+        os.path.join(log_path, "image_demo_finetuned_weights.hdf5"),
+        monitor='val_loss', verbose=2, save_freq='epoch',
+        save_weights_only=True, save_best_only=True,
+        mode='min', restore_best_weights=True)
 
-    finetune_history = finetune_model.fit(
-        train_generator, verbose=2, steps_per_epoch=train_generator.samples / batch_size,
-        validation_data=val_generator, validation_steps=val_generator.samples / batch_size,
+    finetune_history = finetune_model.fit(tf_ds_train, verbose=2, steps_per_epoch=train_generator.samples / batch_size,
+        validation_data=tf_ds_val, validation_steps=val_generator.samples / batch_size,
         epochs=num_epochs, shuffle=True,
         callbacks=[finetune_model_checkpoint, reduce_lr, early_stop, tensorboard_callback]
-                                          )
+    )
     # visualize model loss
     plot_loss(head_tail, finetune_history, finetune=True)
 
     # print out metrics on how the model performed on the test data
-    score = finetune_model.evaluate(test_generator, verbose=2)
+    score = finetune_model.evaluate(tf_ds_test, verbose=2, steps=test_generator.samples)
     print(f"finetune_model loss is: {score[0]}")
     print(f"finetune_model mean absolute error is: {score[1]}")
     print(f"finetune_model mean squared error is: {score[2]}")
     print(f"finetune_model mean average percent error is {score[3]}")
 
     # Plot predictions vs true values to visually assess accuracy and histogram of APE distribution
-    plot_test_predictions(head_tail, model, test_generator, test["Compliance"], finetune=True)
+    plot_test_predictions(head_tail, model, tf_ds_test, test["Compliance"], finetune=True)
     model.save_weights(r"F:\WorkData\MULTIS\logs\image_fit\image_CNN_finetuned_weights.hdf5")
 
     # # Plot different shapley figures for feature importance
@@ -480,7 +531,7 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
         predictions = np_preds[0:batch_size]
         explanation = ig.explain(test_images,
                                  baselines=None,
-                                 target=[0, 0, 0, 0]) # all same class so just 0 for every sample?
+                                 target=[0, 0, 0, 0])  # all same class so just 0 for every sample?
 
         print(explanation.meta)
         print(explanation.data.keys())
@@ -488,27 +539,22 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
         print(f"total attrs: {len(explanation.attributions)}")
         cmap_bound = 1  # data is scaled back to -1 to 1 range
 
-        fig, ax = plt.subplots(nrows=batch_size, ncols=4, figsize=(12, 8))
+        fig, ax = plt.subplots(nrows=batch_size, ncols=2, figsize=(12, 8))
 
         for row, _ in enumerate(test_images[0:batch_size]):
             ax[row, 0].imshow(test_images[row].squeeze(), cmap='gray')
             ax[row, 0].set_title(f'Prediction: {predictions[row]}')
 
             # attributions
-            attr = attrs[row]
+            attr = attrs[0]
             attr = attr.astype(np.float32) / 255.0
             attr = 2 * (attr - np.amin(attr)) / (np.amax(attr) - np.amin(attr)) - 1
 
             print(f"min and max of attr for {np.shape(attr)} = {np.amin(attr)}, {np.amax(attr)}")
-            im = ax[row, 1].imshow(attr.squeeze(), vmin=-cmap_bound, vmax=cmap_bound, cmap='PiYG')
-
-            # positive attributions
-            attr_pos = attr.clip(0, cmap_bound)
-            im_pos = ax[row, 2].imshow(attr_pos.squeeze(), vmin=-cmap_bound, vmax=cmap_bound, cmap='PiYG')
-
-            # negative attributions
-            attr_neg = np.abs(attr.clip(-cmap_bound, 0))
-            im_neg = ax[row, 3].imshow(attr_neg.squeeze(), vmin=-cmap_bound, vmax=cmap_bound, cmap='PiYG')
+            im = alibi.utils.visualize_image_attr(attr=attrs.squeeze(), original_image=test_images[row].squeeze(),
+                                                  method='blended_heat_map', sign='all', show_colorbar=True,
+                                                  title='Overlaid Attributions',plt_fig_axis=(fig, ax[1]),
+                                                  use_pyplot=True)
 
         ax[0, 1].set_title('Attributions');
         ax[0, 2].set_title('Positive attributions');
@@ -583,8 +629,9 @@ if __name__ == "__main__":
     csv_path = r"F:\WorkData\MULTIS\master_csv\001_MasterList_indentation_orig.csv"
     raw_image_dir = r"F:\WorkData\MULTIS\Ultrasound_minImages"
     png_dir = r"F:\WorkData\MULTIS\master_csv\ultrasound_tiff"  # as defined by keras image_flow from dir
-    categoric_features = ["SubID", "Location", "Gender", "ActivityLevel", "Race", "Ethnicity"]  # Features that aren't numerical
-    numeric_features = ["Total_Stiff", "Age",  "BMI"]  # Features defined by a range of numbers
+    categoric_features = ["SubID", "Location", "Gender", "ActivityLevel", "Race",
+                          "Ethnicity"]  # Features that aren't numerical
+    numeric_features = ["Total_Stiff", "Age", "BMI"]  # Features defined by a range of numbers
     plot_shapley = False
     #  lists are sorted alphabetically so order does not matter
     # 1st bool - make gradio interface | second bool - share to the web

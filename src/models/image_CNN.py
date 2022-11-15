@@ -8,6 +8,7 @@ from keras import layers, regularizers
 from keras.preprocessing.image import ImageDataGenerator
 from sklearn.model_selection import train_test_split
 from datetime import datetime
+import alibi
 from alibi.explainers import IntegratedGradients
 import pydicom
 from pydicom.pixel_data_handlers import convert_color_space
@@ -163,9 +164,9 @@ def build_and_compile_model(hp: keras_tuner.HyperParameters()) -> tf.keras.Seque
     pretrained_model.trainable = False
     model.add(pretrained_model)
     model.add(layers.GlobalAveragePooling2D())
-    model.add(layers.Dropout(dropout))
     model.add(layers.Dense(units))  # , activation='relu'))  # kernel_regularizer=regularizers.l2(l2)))
     model.add(layers.PReLU(alpha_initializer=tf.initializers.constant(0.1)))
+    model.add(layers.Dropout(dropout))
     model.add(layers.Dense(1))
     model.compile(loss='mean_absolute_error',
                   optimizer=tf.keras.optimizers.Adam(lr),
@@ -263,11 +264,11 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
 
     train, val = train_test_split(train, test_size=0.2, random_state=752)
 
-    train_datagen = ImageDataGenerator(rescale=1. / 255, horizontal_flip=True,
-                                       fill_mode="nearest", zoom_range=0.1,
-                                       width_shift_range=0.1, height_shift_range=0.1,
-                                       rotation_range=10, shear_range=10)
-    test_datagen = ImageDataGenerator(rescale=1. / 255)
+    train_datagen = ImageDataGenerator(preprocessing_function=tf.keras.applications.xception.preprocess_input, horizontal_flip=True, vertical_flip=True,
+                                       fill_mode="nearest", width_shift_range=0.2, height_shift_range=0.2,
+                                       rotation_range=30)
+
+    test_datagen = ImageDataGenerator(preprocessing_function=tf.keras.applications.xception.preprocess_input)
 
     train_generator = train_datagen.flow_from_dataframe(dataframe=train, directory=None, has_ext=True,
                                                         x_col="filepath", y_col="Compliance", class_mode="other",
@@ -284,21 +285,22 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
                                                       target_size=(IMAGE_SIZE[0], IMAGE_SIZE[1]),
                                                       batch_size=1, shuffle=False, seed=752)
     # #  View generator results
-    img, label = train_generator.next()
-    fig, axs = plt.subplots(2, round(batch_size/2))
-    print(img.shape)  # (batch size, IMAGESIZE, IMAGESIZE, COLORCHANNELS)
-
-    for i, ax in enumerate(axs.flatten()):
-        ax.imshow(img[i])
-        ax.set_xlabel(f"compliance = {label[i]}")
-    plt.show()
-
-    fig, axs = plt.subplots(2, 2)
-    for i, ax in enumerate(axs.flatten()):
-        img, label = test_generator.next() # only one image
-        ax.imshow(img[0])
-        ax.set_xlabel(f"compliance = {label[0]}")
-    plt.show()
+    # img, label = train_generator.next()
+    # fig, axs = plt.subplots(2, round(batch_size/2))
+    # print(img.shape)  # (batch size, IMAGESIZE, IMAGESIZE, COLORCHANNELS)
+    #
+    # for i, ax in enumerate(axs.flatten()):
+    #     # divide by 2 + 0.5 to rescale out of -1 to 1 range for imshow
+    #     ax.imshow((img[i]/2+0.5))
+    #     ax.set_xlabel(f"compliance = {label[i]}")
+    # plt.show()
+    #
+    # fig, axs = plt.subplots(2, 2)
+    # for i, ax in enumerate(axs.flatten()):
+    #     img, label = test_generator.next() # only one image
+    #     ax.imshow((img[0]/2+0.5))
+    #     ax.set_xlabel(f"compliance = {label[0]}")
+    # plt.show()
 
     # create a log directory for a tensorboard visualization
     os.makedirs(os.path.join(head_tail[0], "..", "logs", "image_fit"), exist_ok=True)
@@ -319,7 +321,7 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
         hypermodel=build_and_compile_model,
         objective='val_loss',
         max_trials=5,
-        executions_per_trial=1,
+        executions_per_trial=2,
         overwrite=True,
         directory=log_path,
         project_name="TestingKerasTuner_CNN_only")
@@ -399,13 +401,15 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
 
         # Calculate attributions for the first 10 images in the test set
         images = []
+        labels = []
         predictions = []
         # train on val images due to shearing of training images and lack of memory to hold more than 10 images?
         print(f"looping through a range of {round(test_generator.samples / batch_size)}")
         for _ in range(batch_size):
             batch = next(iter(test_generator))
-            image, _ = batch
+            image, label = batch
             images.append(image)
+            labels.append(label)
             pred = finetune_model.predict(np.reshape(np.squeeze(np.array(image)), (1, 676, 676, 3)))
             print(pred)
             predictions.append(pred)
@@ -423,42 +427,41 @@ def tf_image(csv, raw_image_dir, png_data_dir, categorical_features, numerical_f
                                  baselines=None,
                                  target=[0, 0, 0, 0]) # all same class so just 0 for every sample?
 
-        print(explanation.meta)
+        print(labels)
         print(explanation.data.keys())
         attrs = explanation.attributions[0]
         print(f"total attrs: {len(explanation.attributions)}")
-        cmap_bound = 1  # data is scaled back to -1 to 1 range
+        # cmap_bound = 1  # data is scaled back to -1 to 1 range
 
-        fig, ax = plt.subplots(nrows=batch_size, ncols=4, figsize=(12, 8))
 
+        fig, ax = plt.subplots(nrows=batch_size, ncols=3, figsize=(12, 8))
+        cmap_bool = False
         for row, _ in enumerate(test_images[0:batch_size]):
-            ax[row, 0].imshow(test_images[row].squeeze(), cmap='gray')
-            ax[row, 0].set_title(f'Prediction: {predictions[row]}')
-
-            # attributions
+            # attributions, simplify math?
+            print(type(attrs), print(np.shape(attrs)))
             attr = attrs[row]
             attr = attr.astype(np.float32) / 255.0
             attr = 2 * (attr - np.amin(attr)) / (np.amax(attr) - np.amin(attr)) - 1
+            print(type(attr), print(np.shape(attr)))
+            if row == batch_size - 1:
+                cmap_bool = True
 
             print(f"min and max of attr for {np.shape(attr)} = {np.amin(attr)}, {np.amax(attr)}")
-            im = ax[row, 1].imshow(attr.squeeze(), vmin=-cmap_bound, vmax=cmap_bound, cmap='PiYG')
+            alibi.utils.visualize_image_attr(attr=None, original_image=(test_images[row].squeeze()/2+0.5),
+                                             method='original_image', plt_fig_axis=(fig, ax[row, 0]),
+                                             use_pyplot=False,
+                                             title=f"Label \u2245 {int(labels[row])} vs Predicted \u2245 {int(predictions[row])}")
 
-            # positive attributions
-            attr_pos = attr.clip(0, cmap_bound)
-            im_pos = ax[row, 2].imshow(attr_pos.squeeze(), vmin=-cmap_bound, vmax=cmap_bound, cmap='PiYG')
+            alibi.utils.visualize_image_attr(attr=attr, original_image=(test_images[row].squeeze()/2+0.5),
+                                             method='blended_heat_map', sign='positive', show_colorbar=cmap_bool,
+                                             use_pyplot=False, plt_fig_axis=(fig, ax[row, 1]))
 
-            # negative attributions
-            attr_neg = np.abs(attr.clip(-cmap_bound, 0))
-            im_neg = ax[row, 3].imshow(attr_neg.squeeze(), vmin=-cmap_bound, vmax=cmap_bound, cmap='PiYG')
+            alibi.utils.visualize_image_attr(attr=attr, original_image=(test_images[row].squeeze()/2+0.5),
+                                             method='blended_heat_map', sign='negative', show_colorbar=cmap_bool,
+                                             use_pyplot=False, plt_fig_axis=(fig, ax[row, 2]))
 
-        ax[0, 1].set_title('Attributions');
-        ax[0, 2].set_title('Positive attributions');
-        ax[0, 3].set_title('Negative attributions');
-
-        for ax in fig.axes:
-            ax.axis('off')
-
-        fig.colorbar(im, cax=fig.add_axes([0.9, 0.25, 0.03, 0.5]));
+        ax[0, 1].set_title('Positive attributions')
+        ax[0, 2].set_title('Negative attributions')
         date = datetime.now().strftime("%Y_%m_%d-%I%p")
         print(f'Saving shap picture to {os.path.join(head_tail[0], "..", "Pictures", f"shapley_cnn_image_{date}.png")}')
         plt.savefig(os.path.join(head_tail[0], "..", "Pictures", f"shapley_cnn_image_{date}.png"), format='png')
